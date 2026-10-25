@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,163 +5,31 @@ import {
   BANGLADESH_DIVISIONS,
   calculateOrderTotals,
   validateBangladeshPhone,
-  validateOrderStateTransition,
-  type Product,
-  type CouponDefinition,
-  type SiteSettingsConfig,
-  type PricedOrderItem,
   type PaymentMethod,
   type PaymentStatus,
   type OrderStatus,
   type JerseySize
 } from './src/lib/commerce';
 import {
-  INITIAL_CATALOG,
-  INITIAL_COUPONS,
-  INITIAL_SITE_SETTINGS
-} from './src/data/catalog';
-import {
   extractVerifiedUser,
   checkIsServerAdmin,
   requireAdminMiddleware
 } from './src/lib/serverAuth';
+import {
+  getDefaultPersistenceAdapter,
+  StoreError,
+  type PersistenceAdapter,
+  type StoredOrder
+} from './src/lib/persistentStore';
+
+export type { StoredOrder } from './src/lib/persistentStore';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export interface StoredOrder {
-  id: string;
-  orderNumber: string;
-  idempotencyKey: string;
-  orderAccessToken: string;
-  isDemoOrder: boolean;
-  userId: string | null;
-  customerName: string;
-  customerPhone: string;
-  customerEmail: string;
-  division: string;
-  district: string;
-  upazila: string;
-  streetAddress: string;
-  postalCode: string;
-  deliveryNotes: string;
-  paymentMethod: PaymentMethod;
-  paymentStatus: PaymentStatus;
-  orderStatus: OrderStatus;
-  items: PricedOrderItem[];
-  itemCount: number;
-  subtotalBdt: number;
-  customizationTotalBdt: number;
-  discountBdt: number;
-  appliedCouponCode: string | null;
-  shippingBdt: number;
-  shippingZoneLabel: string;
-  totalBdt: number;
-  createdAt: string;
-  updatedAt: string;
-  statusHistory: {
-    status: OrderStatus;
-    paymentStatus: PaymentStatus;
-    timestamp: string;
-    note: string;
-  }[];
-}
-
-function isBkashConfiguredFromEnv(): boolean {
-  return Boolean(
-    process.env.BKASH_APP_KEY &&
-      process.env.BKASH_APP_SECRET &&
-      process.env.BKASH_USERNAME &&
-      process.env.BKASH_PASSWORD
-  );
-}
-
-function isNagadConfiguredFromEnv(): boolean {
-  return Boolean(
-    process.env.NAGAD_MERCHANT_ID &&
-      process.env.NAGAD_PG_PUBLIC_KEY &&
-      process.env.NAGAD_MERCHANT_PRIVATE_KEY
-  );
-}
-
-// Authoritative server-side state initialized with demonstration catalog and 1 explicitly labeled demo order
-const catalogStore: Product[] = structuredClone(INITIAL_CATALOG);
-const couponsStore: CouponDefinition[] = structuredClone(INITIAL_COUPONS);
-const siteSettingsStore: SiteSettingsConfig = {
-  ...structuredClone(INITIAL_SITE_SETTINGS),
-  bkashMerchantEnabled: isBkashConfiguredFromEnv(),
-  nagadMerchantEnabled: isNagadConfiguredFromEnv()
-};
-
-const inFlightIdempotencyKeys = new Set<string>();
-
-const ordersStore: StoredOrder[] = [
-  {
-    id: 'ord-demo-0001',
-    orderNumber: 'JV-DEMO-0001',
-    idempotencyKey: 'seed-order-demo-0001',
-    orderAccessToken: 'demo-public-token-0001',
-    isDemoOrder: true,
-    userId: null,
-    customerName: 'Sample Customer (Demonstration Record)',
-    customerPhone: '01700000000',
-    customerEmail: 'sample.order@example.invalid',
-    division: 'Dhaka',
-    district: 'Dhaka',
-    upazila: 'Dhanmondi',
-    streetAddress: 'Sample Address — Demonstration Order Only (Not a Real Customer)',
-    postalCode: '1209',
-    deliveryNotes: 'Demonstration order seeded for order-tracking walkthrough.',
-    paymentMethod: 'COD',
-    paymentStatus: 'UNPAID_COD',
-    orderStatus: 'CONFIRMED',
-    items: [
-      {
-        productId: 'arg-home-2026',
-        slug: 'argentina-2026-home-fan-replica',
-        productName: 'Argentina 2026 Home Fan Replica Jersey',
-        team: 'Argentina',
-        editionTier: 'Fan Replica',
-        size: 'L',
-        sku: 'JV-ARG26-L',
-        quantity: 1,
-        baseUnitPriceBdt: 1350,
-        customName: 'MESSI',
-        customNumber: '10',
-        hasCustomPrint: true,
-        customPrintUnitFeeBdt: 350,
-        finalUnitPriceBdt: 1700,
-        lineTotalBdt: 1700
-      }
-    ],
-    itemCount: 1,
-    subtotalBdt: 1700,
-    customizationTotalBdt: 350,
-    discountBdt: 170,
-    appliedCouponCode: 'VALLEY10',
-    shippingBdt: 70,
-    shippingZoneLabel: 'Inside Dhaka Metro (24–48h Dispatch)',
-    totalBdt: 1600,
-    createdAt: '2026-10-24T16:30:00.000Z',
-    updatedAt: '2026-10-24T17:10:00.000Z',
-    statusHistory: [
-      {
-        status: 'PENDING_CONFIRMATION',
-        paymentStatus: 'UNPAID_COD',
-        timestamp: '2026-10-24T16:30:00.000Z',
-        note: 'Demonstration order seeded via Cash on Delivery (Excluded from real revenue metrics).'
-      },
-      {
-        status: 'CONFIRMED',
-        paymentStatus: 'UNPAID_COD',
-        timestamp: '2026-10-24T17:10:00.000Z',
-        note: 'Sample dispatch confirmation for demonstration walkthrough.'
-      }
-    ]
-  }
-];
-
-function sanitizeOrderForClient(order: StoredOrder): Omit<StoredOrder, 'orderAccessToken' | 'idempotencyKey'> {
+function sanitizeOrderForClient(
+  order: StoredOrder
+): Omit<StoredOrder, 'orderAccessToken' | 'idempotencyKey'> {
   const { orderAccessToken: _token, idempotencyKey: _idem, ...safeOrder } = order;
   return safeOrder;
 }
@@ -185,13 +52,43 @@ function resolvePublicBaseUrl(req: express.Request): string {
   return `${proto}://${req.get('host')}`;
 }
 
-export async function createJerseyValleyApp() {
+export interface JerseyValleyAppOptions {
+  store?: PersistenceAdapter;
+  rateLimitMaxRequests?: number;
+  rateLimitWindowMs?: number;
+}
+
+export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
+  const store: PersistenceAdapter = options?.store ?? getDefaultPersistenceAdapter();
+  const rateLimitMax = options?.rateLimitMaxRequests ?? 60;
+  const rateLimitWindowMs = options?.rateLimitWindowMs ?? 60_000;
+
   const app = express();
   app.use(express.json({ limit: '256kb' }));
 
-  // Refresh gateway flags from environment variables on app creation
-  siteSettingsStore.bkashMerchantEnabled = isBkashConfiguredFromEnv();
-  siteSettingsStore.nagadMerchantEnabled = isNagadConfiguredFromEnv();
+  // Sliding-window rate limiter for API mutation & lookup endpoints
+  const rateBuckets = new Map<string, number[]>();
+  function rateLimitMiddleware(bucketPrefix: string, maxRequests = rateLimitMax) {
+    return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      const forwardedFor = req.headers['x-forwarded-for'];
+      const clientIp =
+        typeof forwardedFor === 'string'
+          ? forwardedFor.split(',')[0].trim()
+          : req.ip || '127.0.0.1';
+      const key = `${bucketPrefix}:${clientIp}`;
+      const now = Date.now();
+      const recent = (rateBuckets.get(key) || []).filter((ts) => now - ts < rateLimitWindowMs);
+      if (recent.length >= maxRequests) {
+        res.status(429).json({
+          error: 'Too many requests. Please wait a moment before trying again.'
+        });
+        return;
+      }
+      recent.push(now);
+      rateBuckets.set(key, recent);
+      next();
+    };
+  }
 
   // 0. Server-Validated Session & Admin RBAC Verification Endpoint
   app.get('/api/auth/me', async (req, res) => {
@@ -203,6 +100,7 @@ export async function createJerseyValleyApp() {
         email: null,
         emailVerified: false,
         isAdmin: false,
+        persistenceBackend: store.backendType,
         authNotice: error || null
       });
     }
@@ -213,36 +111,43 @@ export async function createJerseyValleyApp() {
       uid: user.uid,
       email: user.email || null,
       emailVerified: user.emailVerified,
-      isAdmin
+      isAdmin,
+      persistenceBackend: store.backendType
     });
   });
 
-  // 1. Public Storefront Catalog & Config API
-  app.get('/api/catalog', (_req, res) => {
-    res.json({
-      products: catalogStore,
-      coupons: couponsStore.filter((c) => c.isActive),
-      settings: siteSettingsStore
-    });
+  // 1. Public Storefront Catalog & Config API (Backed by shared PersistenceAdapter)
+  app.get('/api/catalog', async (_req, res) => {
+    try {
+      const { products, coupons, settings } = await store.getCatalogAndSettings();
+      return res.json({ products, coupons, settings });
+    } catch {
+      return res.status(500).json({ error: 'Unable to load storefront catalog.' });
+    }
   });
 
   // 2. Trusted Server-Side Checkout Calculation API
-  app.post('/api/checkout/calculate', (req, res) => {
-    const { items, couponCode, division, district } = req.body ?? {};
-    const result = calculateOrderTotals({
-      items: Array.isArray(items) ? items : [],
-      catalog: catalogStore,
-      coupons: couponsStore,
-      settings: siteSettingsStore,
-      couponCode,
-      division,
-      district
-    });
-    res.json(result);
+  app.post('/api/checkout/calculate', async (req, res) => {
+    try {
+      const { items, couponCode, division, district } = req.body ?? {};
+      const { products, coupons, settings } = await store.getCatalogAndSettings();
+      const result = calculateOrderTotals({
+        items: Array.isArray(items) ? items : [],
+        catalog: products,
+        coupons,
+        settings,
+        couponCode,
+        division,
+        district
+      });
+      return res.json(result);
+    } catch {
+      return res.status(500).json({ error: 'Unable to calculate order totals.' });
+    }
   });
 
-  // 3. Atomic Server-Side Order Creation API (COD + Modular Payment Gateway Guard)
-  app.post('/api/orders', async (req, res) => {
+  // 3. Atomic Server-Side Order Creation API (Concurrency-safe transaction via PersistenceAdapter)
+  app.post('/api/orders', rateLimitMiddleware('orders-create'), async (req, res) => {
     const {
       idempotencyKey,
       customerName,
@@ -262,143 +167,74 @@ export async function createJerseyValleyApp() {
     // Mandatory idempotency key validation
     const cleanIdempotencyKey =
       typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
-    if (cleanIdempotencyKey.length < 8 || cleanIdempotencyKey.length > 128) {
+    if (
+      cleanIdempotencyKey.length < 8 ||
+      cleanIdempotencyKey.length > 128 ||
+      !/^[a-zA-Z0-9_\-]+$/.test(cleanIdempotencyKey)
+    ) {
       return res.status(400).json({
-        error: 'A valid idempotencyKey (8–128 characters) is required to prevent duplicate orders.'
+        error:
+          'A valid alphanumeric idempotencyKey (8–128 characters) is required to prevent duplicate orders.'
       });
     }
 
-    // Check completed orders for idempotent replay
-    const existingOrder = ordersStore.find((o) => o.idempotencyKey === cleanIdempotencyKey);
-    if (existingOrder) {
-      return res.status(200).json({
-        order: sanitizeOrderForClient(existingOrder),
-        orderAccessToken: existingOrder.orderAccessToken,
-        duplicatePrevented: true
+    // Verify optional customer authentication token (never trust raw userId in body)
+    const { user: verifiedUser, error: tokenError } = await extractVerifiedUser(req);
+    if (req.headers.authorization && tokenError) {
+      return res.status(401).json({ error: `Invalid authentication token: ${tokenError}` });
+    }
+
+    const trimmedName = String(customerName ?? '').trim();
+    if (trimmedName.length < 2 || trimmedName.length > 80) {
+      return res.status(400).json({ error: 'Please provide your full name (2–80 characters).' });
+    }
+
+    const phoneValidation = validateBangladeshPhone(String(customerPhone ?? ''));
+    if (!phoneValidation.valid) {
+      return res.status(400).json({ error: phoneValidation.error });
+    }
+
+    const cleanDivision = String(division ?? '').trim();
+    const cleanDistrict = String(district ?? '').trim();
+    const cleanUpazila = String(upazila ?? '').trim();
+    const cleanStreet = String(streetAddress ?? '').trim();
+
+    if (
+      !cleanDivision ||
+      !cleanDistrict ||
+      !cleanUpazila ||
+      cleanStreet.length < 4 ||
+      cleanStreet.length > 200
+    ) {
+      return res.status(400).json({
+        error:
+          'Complete Bangladesh address (Division, District, Upazila/Thana, and Street Address 4–200 chars) is required.'
       });
     }
 
-    // Prevent concurrent in-flight duplicate submissions
-    if (inFlightIdempotencyKeys.has(cleanIdempotencyKey)) {
-      return res.status(409).json({
-        error: 'This order request is already being processed. Please wait.'
+    // Server-side validation of Division -> District -> Upazila hierarchy
+    const divisionEntry = BANGLADESH_DIVISIONS[cleanDivision];
+    if (!divisionEntry) {
+      return res.status(400).json({ error: `Invalid Bangladesh division "${cleanDivision}".` });
+    }
+    const allowedUpazilas = divisionEntry.districts[cleanDistrict];
+    if (!allowedUpazilas) {
+      return res.status(400).json({
+        error: `District "${cleanDistrict}" does not belong to ${cleanDivision} division.`
+      });
+    }
+    if (!allowedUpazilas.includes(cleanUpazila)) {
+      return res.status(400).json({
+        error: `Upazila/Thana "${cleanUpazila}" is not listed under ${cleanDistrict} district.`
       });
     }
 
-    inFlightIdempotencyKeys.add(cleanIdempotencyKey);
+    const selectedPayment: PaymentMethod =
+      paymentMethod === 'BKASH' || paymentMethod === 'NAGAD' ? paymentMethod : 'COD';
 
     try {
-      // Verify optional customer authentication token (never trust raw userId in body)
-      const { user: verifiedUser, error: tokenError } = await extractVerifiedUser(req);
-      if (req.headers.authorization && tokenError) {
-        return res.status(401).json({ error: `Invalid authentication token: ${tokenError}` });
-      }
-
-      const trimmedName = String(customerName ?? '').trim();
-      if (trimmedName.length < 2 || trimmedName.length > 80) {
-        return res.status(400).json({ error: 'Please provide your full name (2–80 characters).' });
-      }
-
-      const phoneValidation = validateBangladeshPhone(String(customerPhone ?? ''));
-      if (!phoneValidation.valid) {
-        return res.status(400).json({ error: phoneValidation.error });
-      }
-
-      const cleanDivision = String(division ?? '').trim();
-      const cleanDistrict = String(district ?? '').trim();
-      const cleanUpazila = String(upazila ?? '').trim();
-      const cleanStreet = String(streetAddress ?? '').trim();
-
-      if (!cleanDivision || !cleanDistrict || !cleanUpazila || cleanStreet.length < 4 || cleanStreet.length > 200) {
-        return res.status(400).json({
-          error: 'Complete Bangladesh address (Division, District, Upazila/Thana, and Street Address 4–200 chars) is required.'
-        });
-      }
-
-      // Server-side validation of Division -> District -> Upazila hierarchy
-      const divisionEntry = BANGLADESH_DIVISIONS[cleanDivision];
-      if (!divisionEntry) {
-        return res.status(400).json({ error: `Invalid Bangladesh division "${cleanDivision}".` });
-      }
-      const allowedUpazilas = divisionEntry.districts[cleanDistrict];
-      if (!allowedUpazilas) {
-        return res.status(400).json({
-          error: `District "${cleanDistrict}" does not belong to ${cleanDivision} division.`
-        });
-      }
-      if (!allowedUpazilas.includes(cleanUpazila)) {
-        return res.status(400).json({
-          error: `Upazila/Thana "${cleanUpazila}" is not listed under ${cleanDistrict} district.`
-        });
-      }
-
-      const selectedPayment: PaymentMethod =
-        paymentMethod === 'BKASH' || paymentMethod === 'NAGAD' ? paymentMethod : 'COD';
-
-      // Never simulate fake online payment verification in production
-      if (selectedPayment === 'BKASH' && !siteSettingsStore.bkashMerchantEnabled) {
-        return res.status(400).json({
-          error:
-            'bKash Tokenized Checkout merchant credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to place your order now.'
-        });
-      }
-      if (selectedPayment === 'NAGAD' && !siteSettingsStore.nagadMerchantEnabled) {
-        return res.status(400).json({
-          error:
-            'Nagad Merchant PGW credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to place your order now.'
-        });
-      }
-
-      const calculation = calculateOrderTotals({
-        items: Array.isArray(items) ? items : [],
-        catalog: catalogStore,
-        coupons: couponsStore,
-        settings: siteSettingsStore,
-        couponCode,
-        division: cleanDivision,
-        district: cleanDistrict
-      });
-
-      if (!calculation.valid) {
-        return res.status(400).json({ error: calculation.error ?? 'Order calculation failed.' });
-      }
-
-      // Two-phase atomic check-then-deduct to guarantee no partial stock deduction
-      for (const pricedItem of calculation.items) {
-        const product = catalogStore.find((p) => p.id === pricedItem.productId);
-        const variant = product?.variants.find((v) => v.size === pricedItem.size && v.isActive);
-        if (!product || !variant || variant.stock < pricedItem.quantity) {
-          return res.status(409).json({
-            error: `Stock changed for ${pricedItem.productName} (${pricedItem.size}). Available: ${variant?.stock ?? 0}.`
-          });
-        }
-      }
-
-      const nowIso = new Date().toISOString();
-      for (const pricedItem of calculation.items) {
-        const product = catalogStore.find((p) => p.id === pricedItem.productId)!;
-        const variant = product.variants.find((v) => v.size === pricedItem.size)!;
-        variant.stock -= pricedItem.quantity;
-        product.updatedAt = nowIso;
-      }
-
-      // Generate non-sequential order number and per-order access token
-      let randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
-      while (ordersStore.some((o) => o.orderNumber === `JV-2610-${randomSuffix}`)) {
-        randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
-      }
-      const orderNumber = `JV-2610-${randomSuffix}`;
-      const orderAccessToken = crypto.randomBytes(16).toString('hex');
-
-      const initialPaymentStatus: PaymentStatus =
-        selectedPayment === 'COD' ? 'UNPAID_COD' : 'PENDING_VERIFICATION';
-
-      const newOrder: StoredOrder = {
-        id: `ord-${Date.now()}-${randomSuffix.toLowerCase()}`,
-        orderNumber,
+      const { order, duplicatePrevented } = await store.createOrderAtomic({
         idempotencyKey: cleanIdempotencyKey,
-        orderAccessToken,
-        isDemoOrder: false,
         userId: verifiedUser ? verifiedUser.uid : null,
         customerName: trimmedName,
         customerPhone: phoneValidation.normalized,
@@ -410,44 +246,35 @@ export async function createJerseyValleyApp() {
         postalCode: String(postalCode ?? '').trim().slice(0, 10),
         deliveryNotes: String(deliveryNotes ?? '').trim().slice(0, 250),
         paymentMethod: selectedPayment,
-        paymentStatus: initialPaymentStatus,
-        orderStatus: 'PENDING_CONFIRMATION',
-        items: calculation.items,
-        itemCount: calculation.itemCount,
-        subtotalBdt: calculation.subtotalBdt,
-        customizationTotalBdt: calculation.customizationTotalBdt,
-        discountBdt: calculation.discountBdt,
-        appliedCouponCode: calculation.appliedCouponCode,
-        shippingBdt: calculation.shippingBdt,
-        shippingZoneLabel: calculation.shippingZoneLabel,
-        totalBdt: calculation.totalBdt,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-        statusHistory: [
-          {
-            status: 'PENDING_CONFIRMATION',
-            paymentStatus: initialPaymentStatus,
-            timestamp: nowIso,
-            note:
-              selectedPayment === 'COD'
-                ? 'Order placed via Cash on Delivery. Payment remains UNPAID until doorstep delivery.'
-                : `Order placed via ${selectedPayment}. Awaiting server-side gateway verification.`
-          }
-        ]
-      };
-
-      ordersStore.unshift(newOrder);
-      return res.status(201).json({
-        order: sanitizeOrderForClient(newOrder),
-        orderAccessToken
+        couponCode: typeof couponCode === 'string' ? couponCode : undefined,
+        items: Array.isArray(items) ? items : []
       });
-    } finally {
-      inFlightIdempotencyKeys.delete(cleanIdempotencyKey);
+
+      if (duplicatePrevented) {
+        return res.status(200).json({
+          order: sanitizeOrderForClient(order),
+          orderAccessToken: order.orderAccessToken,
+          duplicatePrevented: true
+        });
+      }
+
+      return res.status(201).json({
+        order: sanitizeOrderForClient(order),
+        orderAccessToken: order.orderAccessToken
+      });
+    } catch (err) {
+      if (err instanceof StoreError) {
+        return res.status(err.statusCode).json({ error: err.message });
+      }
+      return res.status(500).json({ error: 'Order creation failed due to a server error.' });
     }
   });
 
   // Helper to verify whether a requester is authorized to view or cancel a specific order
-  async function verifyOrderAccess(req: express.Request, order: StoredOrder): Promise<{
+  async function verifyOrderAccess(
+    req: express.Request,
+    order: StoredOrder
+  ): Promise<{
     authorized: boolean;
     reason?: string;
   }> {
@@ -492,25 +319,26 @@ export async function createJerseyValleyApp() {
   }
 
   // 4. Order Lookup & Tracking API (Protected against unauthenticated PII enumeration)
-  app.get('/api/orders/:orderNumber', async (req, res) => {
+  app.get('/api/orders/:orderNumber', rateLimitMiddleware('orders-lookup'), async (req, res) => {
     const rawNumber = String(req.params.orderNumber ?? '').trim().toUpperCase();
-    // Map legacy sample order alias JV-2026-1001 to JV-DEMO-0001
-    const lookupNumber = rawNumber === 'JV-2026-1001' ? 'JV-DEMO-0001' : rawNumber;
+    try {
+      const found = await store.getOrderByNumber(rawNumber);
+      if (!found) {
+        return res.status(404).json({ error: `Order ${rawNumber} was not found.` });
+      }
 
-    const found = ordersStore.find((o) => o.orderNumber.toUpperCase() === lookupNumber);
-    if (!found) {
-      return res.status(404).json({ error: `Order ${rawNumber} was not found.` });
+      const access = await verifyOrderAccess(req, found);
+      if (!access.authorized) {
+        return res.status(403).json({
+          error: access.reason,
+          requiresPhoneVerification: true
+        });
+      }
+
+      return res.json({ order: sanitizeOrderForClient(found) });
+    } catch {
+      return res.status(500).json({ error: 'Unable to retrieve order.' });
     }
-
-    const access = await verifyOrderAccess(req, found);
-    if (!access.authorized) {
-      return res.status(403).json({
-        error: access.reason,
-        requiresPhoneVerification: true
-      });
-    }
-
-    return res.json({ order: sanitizeOrderForClient(found) });
   });
 
   // Customer Order List — strictly requires a verified Firebase Bearer token
@@ -524,63 +352,44 @@ export async function createJerseyValleyApp() {
       });
     }
 
-    const matching = ordersStore
-      .filter((o) => !o.isDemoOrder && o.userId === user.uid)
-      .map(sanitizeOrderForClient);
-
-    return res.json({ orders: matching });
+    try {
+      const matching = await store.listCustomerOrders(user.uid);
+      return res.json({ orders: matching.map(sanitizeOrderForClient) });
+    } catch {
+      return res.status(500).json({ error: 'Unable to load customer order history.' });
+    }
   });
 
-  // Customer Cancellation of Pending Order (Requires ownership verification)
-  app.post('/api/orders/:orderNumber/cancel', async (req, res) => {
-    const rawNumber = String(req.params.orderNumber ?? '').trim().toUpperCase();
-    const lookupNumber = rawNumber === 'JV-2026-1001' ? 'JV-DEMO-0001' : rawNumber;
-    const order = ordersStore.find((o) => o.orderNumber.toUpperCase() === lookupNumber);
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
+  // Customer Cancellation of Pending Order (Requires ownership verification + atomic stock restoration)
+  app.post(
+    '/api/orders/:orderNumber/cancel',
+    rateLimitMiddleware('orders-cancel'),
+    async (req, res) => {
+      const rawNumber = String(req.params.orderNumber ?? '').trim().toUpperCase();
+      try {
+        const order = await store.getOrderByNumber(rawNumber);
+        if (!order) {
+          return res.status(404).json({ error: 'Order not found.' });
+        }
 
-    const access = await verifyOrderAccess(req, order);
-    if (!access.authorized) {
-      return res.status(403).json({
-        error: access.reason,
-        requiresPhoneVerification: true
-      });
-    }
+        const access = await verifyOrderAccess(req, order);
+        if (!access.authorized) {
+          return res.status(403).json({
+            error: access.reason,
+            requiresPhoneVerification: true
+          });
+        }
 
-    const check = validateOrderStateTransition({
-      currentOrderStatus: order.orderStatus,
-      currentPaymentStatus: order.paymentStatus,
-      nextOrderStatus: 'CANCELLED',
-      nextPaymentStatus: order.paymentStatus,
-      actorRole: 'customer'
-    });
-
-    if (!check.allowed) {
-      return res.status(400).json({ error: check.error });
-    }
-
-    // Restore variant inventory atomically
-    for (const item of order.items) {
-      const product = catalogStore.find((p) => p.id === item.productId);
-      const variant = product?.variants.find((v) => v.size === item.size);
-      if (variant) {
-        variant.stock += item.quantity;
+        const updated = await store.cancelOrderAtomic(order.orderNumber, 'customer');
+        return res.json({ order: sanitizeOrderForClient(updated) });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to cancel order.' });
       }
     }
-
-    const nowIso = new Date().toISOString();
-    order.orderStatus = 'CANCELLED';
-    order.updatedAt = nowIso;
-    order.statusHistory.push({
-      status: 'CANCELLED',
-      paymentStatus: order.paymentStatus,
-      timestamp: nowIso,
-      note: 'Order cancelled by verified customer prior to dispatch confirmation. Stock restored.'
-    });
-
-    return res.json({ order: sanitizeOrderForClient(order) });
-  });
+  );
 
   // 5. Admin Overview & Management APIs (Protected by Server-Validated Admin RBAC)
   app.get('/api/admin/overview', async (req, res) => {
@@ -595,168 +404,143 @@ export async function createJerseyValleyApp() {
       });
     }
 
-    // Real orders vs sample demonstration orders are strictly separated in financial metrics
-    const realOrders = ordersStore.filter((o) => !o.isDemoOrder);
-    const demoOrders = ordersStore.filter((o) => o.isDemoOrder);
-    const activeRealOrders = realOrders.filter((o) => o.orderStatus !== 'CANCELLED');
+    try {
+      const [{ products, coupons, settings }, allOrders] = await Promise.all([
+        store.getCatalogAndSettings(),
+        store.listAllOrders()
+      ]);
 
-    const totalRevenueBookedBdt = activeRealOrders.reduce((acc, o) => acc + o.totalBdt, 0);
-    const verifiedPaidRevenueBdt = realOrders
-      .filter((o) => o.paymentStatus === 'VERIFIED')
-      .reduce((acc, o) => acc + o.totalBdt, 0);
-    const pendingCodBdt = activeRealOrders
-      .filter((o) => o.paymentStatus === 'UNPAID_COD')
-      .reduce((acc, o) => acc + o.totalBdt, 0);
+      // Real orders vs sample demonstration orders are strictly separated in financial metrics
+      const realOrders = allOrders.filter((o) => !o.isDemoOrder);
+      const demoOrders = allOrders.filter((o) => o.isDemoOrder);
+      const activeRealOrders = realOrders.filter((o) => o.orderStatus !== 'CANCELLED');
 
-    const totalStockUnits = catalogStore.reduce(
-      (acc, p) => acc + p.variants.reduce((vAcc, v) => vAcc + v.stock, 0),
-      0
-    );
+      const totalRevenueBookedBdt = activeRealOrders.reduce((acc, o) => acc + o.totalBdt, 0);
+      const verifiedPaidRevenueBdt = realOrders
+        .filter((o) => o.paymentStatus === 'VERIFIED')
+        .reduce((acc, o) => acc + o.totalBdt, 0);
+      const pendingCodBdt = activeRealOrders
+        .filter((o) => o.paymentStatus === 'UNPAID_COD')
+        .reduce((acc, o) => acc + o.totalBdt, 0);
 
-    // Non-admin read-only preview never receives real customer orders or customer PII
-    const visibleOrders = isAdmin
-      ? ordersStore.map(sanitizeOrderForClient)
-      : demoOrders.map(sanitizeOrderForClient);
+      const totalStockUnits = products.reduce(
+        (acc, p) => acc + p.variants.reduce((vAcc, v) => vAcc + v.stock, 0),
+        0
+      );
 
-    return res.json({
-      authorizedAdmin: isAdmin,
-      metrics: {
-        totalOrders: realOrders.length,
-        demoOrdersCount: demoOrders.length,
-        activeOrdersCount: activeRealOrders.length,
-        totalRevenueBookedBdt,
-        verifiedPaidRevenueBdt,
-        pendingCodBdt,
-        totalProducts: catalogStore.length,
-        totalStockUnits
-      },
-      orders: visibleOrders,
-      products: catalogStore,
-      coupons: couponsStore,
-      settings: siteSettingsStore
-    });
+      // Non-admin read-only preview never receives real customer orders or customer PII
+      const visibleOrders = isAdmin
+        ? allOrders.map(sanitizeOrderForClient)
+        : demoOrders.map(sanitizeOrderForClient);
+
+      return res.json({
+        authorizedAdmin: isAdmin,
+        persistenceBackend: store.backendType,
+        metrics: {
+          totalOrders: realOrders.length,
+          demoOrdersCount: demoOrders.length,
+          activeOrdersCount: activeRealOrders.length,
+          totalRevenueBookedBdt,
+          verifiedPaidRevenueBdt,
+          pendingCodBdt,
+          totalProducts: products.length,
+          totalStockUnits
+        },
+        orders: visibleOrders,
+        products,
+        coupons,
+        settings
+      });
+    } catch {
+      return res.status(500).json({ error: 'Unable to load admin overview.' });
+    }
   });
 
-  app.patch('/api/admin/orders/:orderNumber', requireAdminMiddleware, (req, res) => {
-    const orderNumber = String(req.params.orderNumber ?? '').trim().toUpperCase();
-    const { orderStatus, paymentStatus, note } = req.body ?? {};
-    const order = ordersStore.find((o) => o.orderNumber.toUpperCase() === orderNumber);
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found.' });
-    }
-
-    const nextOrderStatus: OrderStatus = orderStatus ?? order.orderStatus;
-    const nextPaymentStatus: PaymentStatus = paymentStatus ?? order.paymentStatus;
-
-    const check = validateOrderStateTransition({
-      currentOrderStatus: order.orderStatus,
-      currentPaymentStatus: order.paymentStatus,
-      nextOrderStatus,
-      nextPaymentStatus,
-      actorRole: 'admin'
-    });
-
-    if (!check.allowed) {
-      return res.status(400).json({ error: check.error });
-    }
-
-    // If transitioning to CANCELLED from a non-cancelled state, restore inventory
-    if (order.orderStatus !== 'CANCELLED' && nextOrderStatus === 'CANCELLED') {
-      for (const item of order.items) {
-        const product = catalogStore.find((p) => p.id === item.productId);
-        const variant = product?.variants.find((v) => v.size === item.size);
-        if (variant) {
-          variant.stock += item.quantity;
+  app.patch(
+    '/api/admin/orders/:orderNumber',
+    rateLimitMiddleware('admin-write'),
+    requireAdminMiddleware,
+    async (req, res) => {
+      const orderNumber = String(req.params.orderNumber ?? '').trim().toUpperCase();
+      const { orderStatus, paymentStatus, note } = req.body ?? {};
+      try {
+        const existing = await store.getOrderByNumber(orderNumber);
+        if (!existing) {
+          return res.status(404).json({ error: 'Order not found.' });
         }
+
+        const nextOrderStatus: OrderStatus = orderStatus ?? existing.orderStatus;
+        const nextPaymentStatus: PaymentStatus = paymentStatus ?? existing.paymentStatus;
+
+        const updated = await store.updateOrderStatusAtomic({
+          orderNumber: existing.orderNumber,
+          nextOrderStatus,
+          nextPaymentStatus,
+          note: typeof note === 'string' ? note : undefined
+        });
+
+        return res.json({ order: sanitizeOrderForClient(updated) });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to update order status.' });
       }
     }
+  );
 
-    const nowIso = new Date().toISOString();
-    order.orderStatus = nextOrderStatus;
-    order.paymentStatus = nextPaymentStatus;
-    order.updatedAt = nowIso;
-    order.statusHistory.push({
-      status: nextOrderStatus,
-      paymentStatus: nextPaymentStatus,
-      timestamp: nowIso,
-      note:
-        typeof note === 'string' && note.trim()
-          ? note.trim().slice(0, 250)
-          : `Admin updated status to ${nextOrderStatus} / ${nextPaymentStatus}.`
-    });
-
-    return res.json({ order: sanitizeOrderForClient(order) });
-  });
-
-  app.patch('/api/admin/products/:productId/stock', requireAdminMiddleware, (req, res) => {
-    const productId = String(req.params.productId ?? '').trim();
-    const { size, stock, priceBdt } = req.body ?? {};
-    const product = catalogStore.find((p) => p.id === productId);
-    if (!product) {
-      return res.status(404).json({ error: 'Product not found.' });
-    }
-
-    const variant = product.variants.find((v) => v.size === (size as JerseySize));
-    if (!variant) {
-      return res.status(404).json({ error: `Variant size ${size} not found.` });
-    }
-
-    if (typeof stock !== 'undefined') {
-      if (typeof stock !== 'number' || !Number.isFinite(stock) || stock < 0 || stock > 5000) {
-        return res.status(400).json({ error: 'Stock must be a valid number between 0 and 5000.' });
+  app.patch(
+    '/api/admin/products/:productId/stock',
+    rateLimitMiddleware('admin-write'),
+    requireAdminMiddleware,
+    async (req, res) => {
+      const productId = String(req.params.productId ?? '').trim();
+      const { size, stock, priceBdt } = req.body ?? {};
+      try {
+        const product = await store.updateVariantStockAtomic({
+          productId,
+          size: size as JerseySize,
+          stock,
+          priceBdt
+        });
+        return res.json({ product });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to update variant stock.' });
       }
-      variant.stock = Math.floor(stock);
     }
+  );
 
-    if (typeof priceBdt !== 'undefined') {
-      if (typeof priceBdt !== 'number' || !Number.isFinite(priceBdt) || priceBdt < 300 || priceBdt > 25000) {
-        return res.status(400).json({ error: 'Price must be between ৳300 and ৳25,000.' });
-      }
-      variant.priceBdt = Math.round(priceBdt);
-      product.priceBdt = Math.round(priceBdt);
-    }
+  app.patch(
+    '/api/admin/settings',
+    rateLimitMiddleware('admin-write'),
+    requireAdminMiddleware,
+    async (req, res) => {
+      const {
+        announcementText,
+        insideDhakaShippingBdt,
+        outsideDhakaShippingBdt,
+        freeShippingThresholdBdt
+      } = req.body ?? {};
 
-    product.updatedAt = new Date().toISOString();
-    return res.json({ product });
-  });
-
-  app.patch('/api/admin/settings', requireAdminMiddleware, (req, res) => {
-    const {
-      announcementText,
-      insideDhakaShippingBdt,
-      outsideDhakaShippingBdt,
-      freeShippingThresholdBdt
-    } = req.body ?? {};
-
-    if (typeof announcementText === 'string') {
-      const cleanText = announcementText.trim();
-      if (cleanText.length < 5 || cleanText.length > 240) {
-        return res.status(400).json({ error: 'Announcement text must be between 5 and 240 characters.' });
+      try {
+        const settings = await store.updateSiteSettingsAtomic({
+          announcementText,
+          insideDhakaShippingBdt,
+          outsideDhakaShippingBdt,
+          freeShippingThresholdBdt
+        });
+        return res.json({ settings });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to update site settings.' });
       }
-      siteSettingsStore.announcementText = cleanText;
     }
-    if (typeof insideDhakaShippingBdt === 'number') {
-      if (!Number.isFinite(insideDhakaShippingBdt) || insideDhakaShippingBdt < 0 || insideDhakaShippingBdt > 1000) {
-        return res.status(400).json({ error: 'Inside Dhaka shipping rate must be between ৳0 and ৳1,000.' });
-      }
-      siteSettingsStore.insideDhakaShippingBdt = Math.round(insideDhakaShippingBdt);
-    }
-    if (typeof outsideDhakaShippingBdt === 'number') {
-      if (!Number.isFinite(outsideDhakaShippingBdt) || outsideDhakaShippingBdt < 0 || outsideDhakaShippingBdt > 2000) {
-        return res.status(400).json({ error: 'Outside Dhaka shipping rate must be between ৳0 and ৳2,000.' });
-      }
-      siteSettingsStore.outsideDhakaShippingBdt = Math.round(outsideDhakaShippingBdt);
-    }
-    if (typeof freeShippingThresholdBdt === 'number') {
-      if (!Number.isFinite(freeShippingThresholdBdt) || freeShippingThresholdBdt < 0 || freeShippingThresholdBdt > 50000) {
-        return res.status(400).json({ error: 'Free shipping threshold must be between ৳0 and ৳50,000.' });
-      }
-      siteSettingsStore.freeShippingThresholdBdt = Math.round(freeShippingThresholdBdt);
-    }
-    siteSettingsStore.updatedAt = new Date().toISOString();
-
-    return res.json({ settings: siteSettingsStore });
-  });
+  );
 
   // 6. SEO Endpoints: robots.txt and sitemap.xml
   app.get('/robots.txt', (req, res) => {
@@ -766,9 +550,10 @@ export async function createJerseyValleyApp() {
     );
   });
 
-  app.get('/sitemap.xml', (req, res) => {
+  app.get('/sitemap.xml', async (req, res) => {
     const baseUrl = resolvePublicBaseUrl(req);
-    const productUrls = catalogStore
+    const { products } = await store.getCatalogAndSettings();
+    const productUrls = products
       .filter((p) => p.isActive)
       .map(
         (p) =>
@@ -825,7 +610,6 @@ async function startServer() {
   });
 }
 
-// Only start listening if server.ts is executed directly (allows importing createJerseyValleyApp in Vercel /api/index.ts and tests)
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   startServer();
 }

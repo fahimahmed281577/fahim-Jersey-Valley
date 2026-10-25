@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { Request, Response, NextFunction } from 'express';
+import { getFirebaseAdminFirestoreIfConfigured } from './persistentStore';
 
 interface FirebaseAppletConfig {
   projectId: string;
@@ -185,7 +186,7 @@ export async function verifyFirebaseIdToken(
  * 2. Either:
  *    a) The token contains a trusted custom claim (`admin: true` or `role: "admin"`), OR
  *    b) The user's UID is explicitly listed in the server-side `ADMIN_UIDS` env variable, OR
- *    c) A document `/admins/{uid}` exists in the Firestore database (verified via Firestore REST API).
+ *    c) A document `/admins/{uid}` exists in the Firestore database (checked via Admin SDK or REST API).
  */
 export async function checkIsServerAdmin(
   user: VerifiedFirebaseUser,
@@ -206,6 +207,19 @@ export async function checkIsServerAdmin(
 
   if (configuredAdminUids.includes(user.uid)) {
     return true;
+  }
+
+  // Prefer Firebase Admin SDK lookup on /admins/{uid} when configured
+  const adminDb = getFirebaseAdminFirestoreIfConfigured();
+  if (adminDb) {
+    try {
+      const adminSnap = await adminDb.collection('admins').doc(user.uid).get();
+      if (adminSnap.exists) {
+        return true;
+      }
+    } catch {
+      // Fallback to REST check below
+    }
   }
 
   // Check Firestore /admins/{uid} document using the user's verified ID token
