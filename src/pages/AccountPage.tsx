@@ -22,6 +22,7 @@ export const AccountPage: React.FC = () => {
   const {
     currentUser,
     isAdmin,
+    getAuthHeaders,
     savedAddress,
     saveCustomerAddress,
     loginWithGoogle,
@@ -70,21 +71,27 @@ export const AccountPage: React.FC = () => {
 
   useEffect(() => {
     const loadCustomerOrders = async () => {
+      if (!currentUser) {
+        setOrders([]);
+        return;
+      }
       try {
-        const params = new URLSearchParams();
-        if (currentUser?.uid) params.set('userId', currentUser.uid);
-        if (savedAddress.phone) params.set('phone', savedAddress.phone);
-        const res = await fetch(`/api/customer/orders?${params.toString()}`);
+        const authHeaders = await getAuthHeaders();
+        const res = await fetch('/api/customer/orders', {
+          headers: authHeaders
+        });
         if (res.ok) {
           const data = await res.json();
           setOrders(Array.isArray(data.orders) ? data.orders : []);
+        } else {
+          setOrders([]);
         }
       } catch {
-        // ignore
+        setOrders([]);
       }
     };
     loadCustomerOrders();
-  }, [currentUser, savedAddress.phone]);
+  }, [currentUser, getAuthHeaders]);
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -493,12 +500,14 @@ export const AccountPage: React.FC = () => {
                   No orders linked to this session or phone number yet
                 </p>
                 <p className="text-xs text-zinc-500 max-w-md mx-auto">
-                  Place a Cash on Delivery order at checkout, or view our demonstration order{' '}
+                  {currentUser
+                    ? 'Place a Cash on Delivery order while signed in to view your account order history, or inspect our demonstration order '
+                    : 'Sign in above to view orders linked to your account, or inspect our demonstration order '}
                   <Link
-                    to="/orders/JV-2026-1001"
+                    to="/orders/JV-DEMO-0001"
                     className="font-mono-num font-semibold text-[#15803D] underline"
                   >
-                    JV-2026-1001
+                    JV-DEMO-0001
                   </Link>
                   .
                 </p>

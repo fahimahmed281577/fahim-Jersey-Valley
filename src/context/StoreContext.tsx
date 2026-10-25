@@ -22,7 +22,6 @@ import {
   auth,
   db,
   googleProvider,
-  ADMIN_BOOTSTRAP_EMAIL,
   handleFirestoreError,
   OperationType
 } from '../lib/firebase';
@@ -102,6 +101,7 @@ interface StoreContextValue {
   currentUser: User | null;
   isAuthReady: boolean;
   isAdmin: boolean;
+  getAuthHeaders: () => Promise<Record<string, string>>;
   savedAddress: CustomerAddressProfile;
   saveCustomerAddress: (address: CustomerAddressProfile) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
@@ -166,6 +166,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const pushToast = useCallback((title: string, type: ToastMessage['type'] = 'info') => {
@@ -178,6 +179,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const activeUser = auth.currentUser;
+    if (!activeUser) return {};
+    try {
+      const idToken = await activeUser.getIdToken();
+      return { Authorization: `Bearer ${idToken}` };
+    } catch {
+      return {};
+    }
   }, []);
 
   const refreshCatalog = useCallback(async () => {
@@ -223,13 +235,34 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [wishlistIds]);
 
-  // Listen to Firebase Auth state and sync user profile + wishlist when verified
+  // Listen to Firebase Auth state, verify server-side admin RBAC, and sync profile + wishlist
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       setIsAuthReady(true);
 
-      if (user && user.emailVerified) {
+      if (!user) {
+        setIsAdmin(false);
+        return;
+      }
+
+      // Check server-validated admin status via /api/auth/me + Firestore /admins/{uid}
+      try {
+        const token = await user.getIdToken();
+        const meRes = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (meRes.ok) {
+          const meData = await meRes.json();
+          setIsAdmin(Boolean(meData.isAdmin));
+        } else {
+          setIsAdmin(false);
+        }
+      } catch {
+        setIsAdmin(false);
+      }
+
+      if (user.emailVerified) {
         const userDocPath = `users/${user.uid}`;
         try {
           const snap = await getDoc(doc(db, 'users', user.uid));
@@ -266,7 +299,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             setWishlistIds((prev) => Array.from(new Set([...prev, ...remoteIds])));
           }
         } catch (err) {
-          // Only report structured Firestore error if permission issue occurs
           console.warn('Profile sync notice:', userDocPath, err);
         }
       }
@@ -515,6 +547,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const logoutUser = useCallback(async () => {
     await signOut(auth);
+    setIsAdmin(false);
     pushToast('Signed out of your account', 'info');
   }, [pushToast]);
 
@@ -522,12 +555,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const cartSubtotalBdt = cart.reduce(
     (acc, item) => acc + item.unitPriceBdt * item.quantity,
     0
-  );
-
-  const isAdmin = Boolean(
-    currentUser &&
-      currentUser.emailVerified &&
-      currentUser.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase()
   );
 
   return (
@@ -553,6 +580,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         currentUser,
         isAuthReady,
         isAdmin,
+        getAuthHeaders,
         savedAddress,
         saveCustomerAddress,
         loginWithGoogle,

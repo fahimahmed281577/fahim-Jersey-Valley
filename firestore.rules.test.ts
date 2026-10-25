@@ -2,139 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Server } from 'node:http';
+import { initializeApp, deleteApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import firebaseConfig from './firebase-applet-config.json';
+import { createJerseyValleyApp } from './server.ts';
 
 const rulesPath = path.resolve(process.cwd(), 'firestore.rules');
 const blueprintPath = path.resolve(process.cwd(), 'firebase-blueprint.json');
 const rulesContent = fs.readFileSync(rulesPath, 'utf-8');
 const blueprint = JSON.parse(fs.readFileSync(blueprintPath, 'utf-8'));
 
-// Simulated Zero-Trust Rule Evaluator for Dirty Dozen Payloads
-interface AuthContext {
-  uid: string;
-  email: string;
-  email_verified: boolean;
-  isAdminDocPresent?: boolean;
-}
-
-function isValidId(id: string): boolean {
-  return typeof id === 'string' && id.length >= 1 && id.length <= 128 && /^[a-zA-Z0-9_\-]+$/.test(id);
-}
-
-function isVerifiedUser(auth: AuthContext | null): boolean {
-  return auth !== null && auth.email_verified === true;
-}
-
-function isAdmin(auth: AuthContext | null): boolean {
-  return isVerifiedUser(auth) && Boolean(auth?.isAdminDocPresent || auth?.email === 'chalantika07@gmail.com');
-}
-
-function evaluateDirtyPayload(
-  operation: 'get' | 'list' | 'create' | 'update',
-  collectionPath: string,
-  docId: string,
-  auth: AuthContext | null,
-  incomingData: Record<string, unknown> | null,
-  existingData: Record<string, unknown> | null,
-  parentExists = true
-): 'ALLOWED' | 'PERMISSION_DENIED' {
-  if (operation !== 'list' && !isValidId(docId)) {
-    return 'PERMISSION_DENIED';
-  }
-
-  if (collectionPath === '/users') {
-    if (operation === 'create' && incomingData) {
-      const allowed = ['uid', 'displayName', 'favoriteTeam', 'createdAt', 'updatedAt'];
-      const required = ['uid', 'displayName', 'createdAt', 'updatedAt'];
-      const keys = Object.keys(incomingData);
-      if (!required.every((k) => keys.includes(k)) || !keys.every((k) => allowed.includes(k))) {
-        return 'PERMISSION_DENIED';
-      }
-      if (!isVerifiedUser(auth) || incomingData.uid !== auth?.uid || incomingData.uid !== docId) {
-        return 'PERMISSION_DENIED';
-      }
-      if (typeof incomingData.displayName !== 'string' || incomingData.displayName.length > 80) {
-        return 'PERMISSION_DENIED';
-      }
-      return 'ALLOWED';
-    }
-    if (operation === 'update' && incomingData && existingData) {
-      const allowed = ['uid', 'displayName', 'favoriteTeam', 'createdAt', 'updatedAt'];
-      const keys = Object.keys(incomingData);
-      if (!keys.every((k) => allowed.includes(k))) return 'PERMISSION_DENIED';
-      if (incomingData.uid !== existingData.uid || incomingData.createdAt !== existingData.createdAt) {
-        return 'PERMISSION_DENIED';
-      }
-      if (typeof incomingData.displayName !== 'string' || incomingData.displayName.length > 80) {
-        return 'PERMISSION_DENIED';
-      }
-      return 'ALLOWED';
-    }
-  }
-
-  if (collectionPath.startsWith('/users/') && collectionPath.endsWith('/private')) {
-    const ownerUid = collectionPath.split('/')[2];
-    if (!parentExists) return 'PERMISSION_DENIED';
-    if (operation === 'get') {
-      if ((isVerifiedUser(auth) && auth?.uid === ownerUid) || isAdmin(auth)) return 'ALLOWED';
-      return 'PERMISSION_DENIED';
-    }
-  }
-
-  if (collectionPath.startsWith('/users/') && collectionPath.endsWith('/wishlist')) {
-    if (!parentExists) return 'PERMISSION_DENIED';
-  }
-
-  if (collectionPath === '/products') {
-    if (operation === 'create') {
-      if (!isAdmin(auth)) return 'PERMISSION_DENIED';
-      return 'ALLOWED';
-    }
-  }
-
-  if (collectionPath === '/orders') {
-    if (operation === 'list') {
-      if (!auth) return 'PERMISSION_DENIED';
-      if (!existingData || (existingData.userId !== auth.uid && !isAdmin(auth))) {
-        return 'PERMISSION_DENIED';
-      }
-      return 'ALLOWED';
-    }
-    if (operation === 'create' && incomingData) {
-      if (!isVerifiedUser(auth) || incomingData.userId !== auth?.uid || !parentExists) {
-        return 'PERMISSION_DENIED';
-      }
-      if (!['UNPAID_COD', 'PENDING_VERIFICATION'].includes(String(incomingData.paymentStatus))) {
-        return 'PERMISSION_DENIED';
-      }
-      if (incomingData.orderStatus !== 'PENDING_CONFIRMATION') {
-        return 'PERMISSION_DENIED';
-      }
-      if (
-        typeof incomingData.customerPhone !== 'string' ||
-        !/^(\+?880|0)1[3-9][0-9]{8}$/.test(incomingData.customerPhone)
-      ) {
-        return 'PERMISSION_DENIED';
-      }
-      return 'ALLOWED';
-    }
-    if (operation === 'update' && incomingData && existingData) {
-      if (isAdmin(auth)) return 'ALLOWED';
-      const changedKeys = Object.keys(incomingData).filter((k) => incomingData[k] !== existingData[k]);
-      const allowedDiff = ['orderStatus', 'updatedAt'];
-      if (!changedKeys.every((k) => allowedDiff.includes(k))) {
-        return 'PERMISSION_DENIED';
-      }
-      if (existingData.orderStatus !== 'PENDING_CONFIRMATION' || incomingData.orderStatus !== 'CANCELLED') {
-        return 'PERMISSION_DENIED';
-      }
-      return 'ALLOWED';
-    }
-  }
-
-  return 'PERMISSION_DENIED';
-}
-
-test('Firestore rules file contains all blueprint collections and Eight Pillars primitives', () => {
+// ============================================================================
+// PART 1: Static & Structural Verification of firestore.rules (No Hardcoded Email)
+// ============================================================================
+test('Firestore rules file contains all blueprint collections, Eight Pillars primitives, and NO hardcoded admin email', () => {
   assert.ok(rulesContent.includes("rules_version = '2';"));
   assert.ok(rulesContent.includes('match /{document=**} {\n      allow read, write: if false;\n    }'));
   assert.ok(rulesContent.includes('function isValidId(id)'));
@@ -144,176 +26,252 @@ test('Firestore rules file contains all blueprint collections and Eight Pillars 
   assert.ok(rulesContent.includes('function isValidProduct(data)'));
   assert.ok(rulesContent.includes('request.auth.token.email_verified == true'));
 
+  // Verify hardcoded bootstrap email was completely removed from firestore.rules
+  assert.equal(
+    rulesContent.includes('chalantika07@gmail.com'),
+    false,
+    'firestore.rules must not contain a hardcoded administrator email address'
+  );
+  assert.ok(
+    rulesContent.includes('exists(/databases/$(database)/documents/admins/$(request.auth.uid))'),
+    'isAdmin() must verify existence of /admins/{uid} document'
+  );
+
   const blueprintPaths = Object.keys(blueprint.firestore);
   assert.equal(blueprintPaths.length, 8);
 });
 
-test('Dirty Dozen Payload 1: Shadow privilege field on UserProfile is denied', () => {
-  const res = evaluateDirtyPayload(
-    'create',
-    '/users',
-    'u1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    { uid: 'u1', displayName: 'Rahim', isAdmin: true, createdAt: 'SERVER_TIME', updatedAt: 'SERVER_TIME' },
-    null
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
+// ============================================================================
+// PART 2: Live Deployed Cloud Firestore Security Rules Enforcement Tests
+// (Executes real network operations against the provisioned Cloud Firestore
+// database to prove that deployed rules actively enforce PERMISSION_DENIED)
+// ============================================================================
+test('Live Cloud Firestore Rules Enforcement: Unauthenticated read of /users/{uid}/private/shipping is rejected by Firebase servers', async () => {
+  const app = initializeApp(firebaseConfig, `live-rules-test-${Date.now()}-1`);
+  try {
+    const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    await assert.rejects(
+      async () => {
+        await getDoc(doc(db, 'users', 'some_customer_uid', 'private', 'shipping'));
+      },
+      (err: { code?: string; message?: string }) => {
+        assert.ok(
+          err.code === 'permission-denied' || String(err.message).includes('Missing or insufficient permissions'),
+          `Expected permission-denied from live Firestore, got: ${err.code} ${err.message}`
+        );
+        return true;
+      }
+    );
+  } finally {
+    await deleteApp(app);
+  }
 });
 
-test('Dirty Dozen Payload 2: Cross-user PII read on /users/u1/private/info is denied', () => {
-  const res = evaluateDirtyPayload(
-    'get',
-    '/users/u1/private',
-    'info',
-    { uid: 'u2', email: 'karim@example.com', email_verified: true },
-    null,
-    { uid: 'u1', phone: '01712345678' },
-    true
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
+test('Live Cloud Firestore Rules Enforcement: Unauthenticated client cannot write or tamper with /products/{productId}', async () => {
+  const app = initializeApp(firebaseConfig, `live-rules-test-${Date.now()}-2`);
+  try {
+    const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    await assert.rejects(
+      async () => {
+        await setDoc(doc(db, 'products', 'arg-home-2026'), {
+          id: 'arg-home-2026',
+          slug: 'argentina-2026-home-fan-replica',
+          name: 'Tampered Jersey Price',
+          team: 'Argentina',
+          category: 'national',
+          kitType: 'Home',
+          editionTier: 'Fan Replica',
+          priceBdt: 1,
+          customPrintPriceBdt: 0,
+          stockTotal: 999,
+          isActive: true,
+          updatedAt: new Date().toISOString()
+        });
+      },
+      (err: { code?: string; message?: string }) => {
+        assert.ok(
+          err.code === 'permission-denied' || String(err.message).includes('Missing or insufficient permissions'),
+          `Expected permission-denied from live Firestore, got: ${err.code} ${err.message}`
+        );
+        return true;
+      }
+    );
+  } finally {
+    await deleteApp(app);
+  }
 });
 
-test('Dirty Dozen Payload 3: Orphaned subcollection write without parent user document is denied', () => {
-  const res = evaluateDirtyPayload(
-    'create',
-    '/users/u1/wishlist',
-    'w1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    { userId: 'u1', productId: 'p1', productName: 'Argentina Home', priceBdt: 1450, createdAt: 'SERVER_TIME' },
-    null,
-    false
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
+test('Live Cloud Firestore Rules Enforcement: Unauthenticated client cannot self-grant /admins/{uid}', async () => {
+  const app = initializeApp(firebaseConfig, `live-rules-test-${Date.now()}-3`);
+  try {
+    const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    await assert.rejects(
+      async () => {
+        await setDoc(doc(db, 'admins', 'attacker_uid'), {
+          uid: 'attacker_uid',
+          email: 'attacker@example.com',
+          role: 'admin',
+          createdAt: new Date().toISOString()
+        });
+      },
+      (err: { code?: string; message?: string }) => {
+        assert.ok(
+          err.code === 'permission-denied' || String(err.message).includes('Missing or insufficient permissions'),
+          `Expected permission-denied from live Firestore, got: ${err.code} ${err.message}`
+        );
+        return true;
+      }
+    );
+  } finally {
+    await deleteApp(app);
+  }
 });
 
-test('Dirty Dozen Payload 4: Fake paid order creation with paymentStatus VERIFIED is denied', () => {
-  const res = evaluateDirtyPayload(
-    'create',
-    '/orders',
-    'o1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    {
-      orderNumber: 'JV-1001',
-      userId: 'u1',
-      customerPhone: '01712345678',
-      paymentStatus: 'VERIFIED',
-      orderStatus: 'PENDING_CONFIRMATION'
-    },
-    null,
-    true
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
+test('Live Cloud Firestore Rules Enforcement: Unauthenticated client cannot read /orders/{orderId}', async () => {
+  const app = initializeApp(firebaseConfig, `live-rules-test-${Date.now()}-4`);
+  try {
+    const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    await assert.rejects(
+      async () => {
+        await getDoc(doc(db, 'orders', 'JV-DEMO-0001'));
+      },
+      (err: { code?: string; message?: string }) => {
+        assert.ok(
+          err.code === 'permission-denied' || String(err.message).includes('Missing or insufficient permissions'),
+          `Expected permission-denied from live Firestore, got: ${err.code} ${err.message}`
+        );
+        return true;
+      }
+    );
+  } finally {
+    await deleteApp(app);
+  }
 });
 
-test('Dirty Dozen Payload 5: Order price tampering on update is denied', () => {
-  const res = evaluateDirtyPayload(
-    'update',
-    '/orders',
-    'o1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    { orderStatus: 'CANCELLED', totalBdt: 10, updatedAt: 'NEW_TIME' },
-    { orderStatus: 'PENDING_CONFIRMATION', totalBdt: 1550, updatedAt: 'OLD_TIME' }
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
-});
+// ============================================================================
+// PART 3: Backend Express API Security, RBAC, IDOR & Concurrency Tests
+// ============================================================================
+test('Backend API Security Suite: Admin endpoints reject unauthenticated mutations (401) and protect customer order PII (403)', async () => {
+  const app = await createJerseyValleyApp();
+  const server: Server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
 
-test('Dirty Dozen Payload 6: Terminal state re-opening from DELIVERED to CANCELLED is denied', () => {
-  const res = evaluateDirtyPayload(
-    'update',
-    '/orders',
-    'o1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    { orderStatus: 'CANCELLED', updatedAt: 'NEW_TIME' },
-    { orderStatus: 'DELIVERED', updatedAt: 'OLD_TIME' }
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
-});
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  const baseUrl = `http://127.0.0.1:${port}`;
 
-test('Dirty Dozen Payload 7: Unfiltered order list scraping across users is denied', () => {
-  const res = evaluateDirtyPayload(
-    'list',
-    '/orders',
-    'o2',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    null,
-    { userId: 'u2' }
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
-});
+  try {
+    // 1. Unauthenticated PATCH /api/admin/settings must return 401
+    const adminSettingsRes = await fetch(`${baseUrl}/api/admin/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ insideDhakaShippingBdt: 0 })
+    });
+    assert.equal(adminSettingsRes.status, 401);
 
-test('Dirty Dozen Payload 8: Admin email spoofing with email_verified=false is denied', () => {
-  const res = evaluateDirtyPayload(
-    'create',
-    '/products',
-    'p1',
-    { uid: 'spoof1', email: 'chalantika07@gmail.com', email_verified: false },
-    { id: 'p1' },
-    null
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
-});
+    // 2. Unauthenticated PATCH /api/admin/products/:id/stock must return 401
+    const adminStockRes = await fetch(`${baseUrl}/api/admin/products/arg-home-2026/stock`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ size: 'L', stock: 999 })
+    });
+    assert.equal(adminStockRes.status, 401);
 
-test('Dirty Dozen Payload 9: Denial-of-Wallet oversized string injection is denied', () => {
-  const res = evaluateDirtyPayload(
-    'update',
-    '/users',
-    'u1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    {
-      uid: 'u1',
-      displayName: 'A'.repeat(5000),
-      createdAt: 'T1',
-      updatedAt: 'T2'
-    },
-    {
-      uid: 'u1',
-      displayName: 'Rahim',
-      createdAt: 'T1',
-      updatedAt: 'T1'
-    }
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
-});
+    // 3. Unauthenticated GET /api/customer/orders must return 401 (no arbitrary phone/userId scraping)
+    const custOrdersRes = await fetch(`${baseUrl}/api/customer/orders?phone=01711223344`);
+    assert.equal(custOrdersRes.status, 401);
 
-test('Dirty Dozen Payload 10: ID poisoning with invalid characters is denied', () => {
-  const res = evaluateDirtyPayload(
-    'create',
-    '/users',
-    'bad/id with spaces!',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    { uid: 'u1', displayName: 'Rahim', createdAt: 'T1', updatedAt: 'T1' },
-    null
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
-});
+    // 4. POST /api/orders with fabricated Division/District/Upazila must return 400
+    const badLocationRes = await fetch(`${baseUrl}/api/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idempotencyKey: 'idem-bad-loc-12345',
+        customerName: 'Nayeem Islam',
+        customerPhone: '01712345678',
+        division: 'Dhaka',
+        district: 'Chattogram', // Mismatched district for Dhaka division
+        upazila: 'Dhanmondi',
+        streetAddress: 'House 12, Road 4',
+        paymentMethod: 'COD',
+        items: [{ productId: 'arg-home-2026', size: 'M', quantity: 1 }]
+      })
+    });
+    assert.equal(badLocationRes.status, 400);
 
-test('Dirty Dozen Payload 11: Immortal field mutation (createdAt or uid) is denied', () => {
-  const res = evaluateDirtyPayload(
-    'update',
-    '/users',
-    'u1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    { uid: 'u1', displayName: 'Rahim Updated', createdAt: 'TAMPERED_TIME', updatedAt: 'T2' },
-    { uid: 'u1', displayName: 'Rahim', createdAt: 'ORIGINAL_TIME', updatedAt: 'T1' }
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
-});
+    // 5. Place a valid COD order and verify non-sequential orderNumber + idempotency + PII protection
+    const idemKey = `idem-test-${Date.now()}`;
+    const validOrderRes = await fetch(`${baseUrl}/api/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idempotencyKey: idemKey,
+        customerName: 'Nayeem Islam',
+        customerPhone: '01812345678',
+        division: 'Dhaka',
+        district: 'Dhaka',
+        upazila: 'Dhanmondi',
+        streetAddress: 'House 12, Road 4, Dhanmondi',
+        paymentMethod: 'COD',
+        items: [{ productId: 'arg-home-2026', size: 'M', quantity: 1 }]
+      })
+    });
+    assert.equal(validOrderRes.status, 201);
+    const createdPayload = await validOrderRes.json();
+    const orderNumber: string = createdPayload.order.orderNumber;
+    const accessToken: string = createdPayload.orderAccessToken;
+    assert.match(orderNumber, /^JV-2610-[0-9A-F]{6}$/);
+    assert.equal(createdPayload.order.paymentStatus, 'UNPAID_COD');
+    assert.equal(createdPayload.order.orderStatus, 'PENDING_CONFIRMATION');
 
-test('Dirty Dozen Payload 12: Invalid Bangladesh phone number format in order is denied', () => {
-  const res = evaluateDirtyPayload(
-    'create',
-    '/orders',
-    'o1',
-    { uid: 'u1', email: 'rahim@example.com', email_verified: true },
-    {
-      orderNumber: 'JV-1002',
-      userId: 'u1',
-      customerPhone: '12345',
-      paymentStatus: 'UNPAID_COD',
-      orderStatus: 'PENDING_CONFIRMATION'
-    },
-    null,
-    true
-  );
-  assert.equal(res, 'PERMISSION_DENIED');
+    // 6. Replay with same idempotencyKey returns 200 duplicatePrevented: true without double-deducting stock
+    const replayRes = await fetch(`${baseUrl}/api/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idempotencyKey: idemKey,
+        customerName: 'Nayeem Islam',
+        customerPhone: '01812345678',
+        division: 'Dhaka',
+        district: 'Dhaka',
+        upazila: 'Dhanmondi',
+        streetAddress: 'House 12, Road 4, Dhanmondi',
+        paymentMethod: 'COD',
+        items: [{ productId: 'arg-home-2026', size: 'M', quantity: 1 }]
+      })
+    });
+    assert.equal(replayRes.status, 200);
+    const replayPayload = await replayRes.json();
+    assert.equal(replayPayload.duplicatePrevented, true);
+    assert.equal(replayPayload.order.orderNumber, orderNumber);
+
+    // 7. Stranger attempting GET /api/orders/:orderNumber without phone or token receives 403
+    const strangerGetRes = await fetch(`${baseUrl}/api/orders/${orderNumber}`);
+    assert.equal(strangerGetRes.status, 403);
+
+    // 8. Customer providing matching phone number or orderAccessToken can view and cancel order
+    const ownerPhoneGetRes = await fetch(`${baseUrl}/api/orders/${orderNumber}?phone=01812345678`);
+    assert.equal(ownerPhoneGetRes.status, 200);
+
+    // 9. Stranger attempting POST /api/orders/:orderNumber/cancel without phone/token receives 403
+    const strangerCancelRes = await fetch(`${baseUrl}/api/orders/${orderNumber}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '01999999999' })
+    });
+    assert.equal(strangerCancelRes.status, 403);
+
+    // 10. Authorized customer cancels with orderAccessToken -> 200 & status CANCELLED
+    const ownerCancelRes = await fetch(`${baseUrl}/api/orders/${orderNumber}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderAccessToken: accessToken })
+    });
+    assert.equal(ownerCancelRes.status, 200);
+    const cancelledPayload = await ownerCancelRes.json();
+    assert.equal(cancelledPayload.order.orderStatus, 'CANCELLED');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

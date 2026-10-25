@@ -6,7 +6,8 @@ import {
   Layers,
   Settings,
   RefreshCw,
-  CheckCircle2
+  CheckCircle2,
+  Lock
 } from 'lucide-react';
 import {
   formatBdt,
@@ -16,10 +17,10 @@ import {
   type SiteSettingsConfig
 } from '../lib/commerce';
 import { useStore } from '../context/StoreContext';
-import { ADMIN_BOOTSTRAP_EMAIL } from '../lib/firebase';
 
 interface AdminOrderRecord {
   orderNumber: string;
+  isDemoOrder?: boolean;
   customerName: string;
   customerPhone: string;
   division: string;
@@ -35,6 +36,7 @@ interface AdminOrderRecord {
 
 interface AdminMetrics {
   totalOrders: number;
+  demoOrdersCount: number;
   activeOrdersCount: number;
   totalRevenueBookedBdt: number;
   verifiedPaidRevenueBdt: number;
@@ -44,9 +46,10 @@ interface AdminMetrics {
 }
 
 export const AdminDashboardPage: React.FC = () => {
-  const { currentUser, isAdmin, refreshCatalog, pushToast } = useStore();
+  const { currentUser, isAdmin, getAuthHeaders, refreshCatalog, pushToast } = useStore();
 
   const [activeTab, setActiveTab] = useState<'orders' | 'inventory' | 'settings'>('orders');
+  const [authorizedAdmin, setAuthorizedAdmin] = useState<boolean>(false);
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [orders, setOrders] = useState<AdminOrderRecord[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -56,9 +59,13 @@ export const AdminDashboardPage: React.FC = () => {
   const loadAdminOverview = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/overview');
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch('/api/admin/overview?mode=readonly_audit', {
+        headers: authHeaders
+      });
       if (res.ok) {
         const data = await res.json();
+        setAuthorizedAdmin(Boolean(data.authorizedAdmin));
         setMetrics(data.metrics);
         setOrders(data.orders || []);
         setProducts(data.products || []);
@@ -67,11 +74,11 @@ export const AdminDashboardPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
     loadAdminOverview();
-  }, [loadAdminOverview]);
+  }, [loadAdminOverview, currentUser, isAdmin]);
 
   const handleOrderUpdate = async (
     orderNumber: string,
@@ -79,9 +86,13 @@ export const AdminDashboardPage: React.FC = () => {
     nextPaymentStatus: PaymentStatus
   ) => {
     try {
+      const authHeaders = await getAuthHeaders();
       const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderNumber)}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
         body: JSON.stringify({
           orderStatus: nextOrderStatus,
           paymentStatus: nextPaymentStatus
@@ -107,16 +118,23 @@ export const AdminDashboardPage: React.FC = () => {
   ) => {
     if (nextStock < 0) return;
     try {
+      const authHeaders = await getAuthHeaders();
       const res = await fetch(`/api/admin/products/${encodeURIComponent(productId)}/stock`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
         body: JSON.stringify({ size, stock: nextStock })
       });
-      if (res.ok) {
-        await loadAdminOverview();
-        await refreshCatalog();
-        pushToast(`Updated stock for ${productId} (${size}) to ${nextStock}`, 'success');
+      const data = await res.json();
+      if (!res.ok) {
+        pushToast(data.error || 'Administrator privileges required to modify stock.', 'error');
+        return;
       }
+      await loadAdminOverview();
+      await refreshCatalog();
+      pushToast(`Updated stock for ${productId} (${size}) to ${nextStock}`, 'success');
     } catch {
       pushToast('Could not update stock.', 'error');
     }
@@ -126,16 +144,23 @@ export const AdminDashboardPage: React.FC = () => {
     e.preventDefault();
     if (!settingsForm) return;
     try {
+      const authHeaders = await getAuthHeaders();
       const res = await fetch('/api/admin/settings', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
         body: JSON.stringify(settingsForm)
       });
-      if (res.ok) {
-        await loadAdminOverview();
-        await refreshCatalog();
-        pushToast('Updated Bangladesh shipping charges & site announcement', 'success');
+      const data = await res.json();
+      if (!res.ok) {
+        pushToast(data.error || 'Administrator privileges required to update settings.', 'error');
+        return;
       }
+      await loadAdminOverview();
+      await refreshCatalog();
+      pushToast('Updated Bangladesh shipping charges & site announcement', 'success');
     } catch {
       pushToast('Could not save settings.', 'error');
     }
@@ -149,7 +174,7 @@ export const AdminDashboardPage: React.FC = () => {
           <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
             <span>STORE ADMINISTRATION</span>
             <span aria-hidden="true">·</span>
-            <span>ACTUAL STORED DATA METRICS</span>
+            <span>SERVER-VERIFIED FIREBASE RBAC</span>
             <span aria-hidden="true">·</span>
             <span>BDT (৳)</span>
           </div>
@@ -169,43 +194,64 @@ export const AdminDashboardPage: React.FC = () => {
       </div>
 
       {/* RBAC & Security Verification Notice */}
-      <div className="bg-white border border-zinc-200 p-4 flex flex-wrap items-center justify-between gap-4 text-xs">
-        <div className="flex items-center gap-2.5 text-zinc-700">
-          <ShieldCheck className="w-4 h-4 text-[#15803D] shrink-0" />
-          <span>
-            <strong>Firestore Security Rules RBAC:</strong> Direct Firestore writes to{' '}
-            <code>/products</code>, <code>/siteSettings</code>, and <code>/admins</code> require{' '}
-            <code>isAdmin()</code> (verified bootstrap admin <code>{ADMIN_BOOTSTRAP_EMAIL}</code>).
-            Current session:{' '}
-            <strong>
-              {currentUser
-                ? `${currentUser.email} (${isAdmin ? 'Verified Admin' : 'Customer'})`
-                : 'Preview Guest Session'}
-            </strong>
-          </span>
+      <div
+        className={`border p-4 flex flex-wrap items-center justify-between gap-4 text-xs ${
+          authorizedAdmin
+            ? 'bg-emerald-50/50 border-[#15803D] text-zinc-800'
+            : 'bg-white border-zinc-300 text-zinc-700'
+        }`}
+      >
+        <div className="flex items-start gap-2.5">
+          {authorizedAdmin ? (
+            <ShieldCheck className="w-4 h-4 text-[#15803D] shrink-0 mt-0.5" />
+          ) : (
+            <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+          )}
+          <div className="space-y-1">
+            <p>
+              <strong>Server-Side &amp; Firestore Admin Authorization:</strong> All write endpoints (
+              <code>PATCH /api/admin/*</code>) and Firestore rules require a cryptographically verified
+              Firebase ID token with <code>email_verified == true</code> and an administrator record in{' '}
+              <code>/admins/&#123;uid&#125;</code>, <code>ADMIN_UIDS</code> env var, or custom claim{' '}
+              <code>admin: true</code>. No hardcoded email addresses are trusted.
+            </p>
+            <p>
+              Current session:{' '}
+              <strong>
+                {currentUser
+                  ? `${currentUser.email} (UID: ${currentUser.uid} · ${
+                      authorizedAdmin ? 'Verified Server Admin — Write Enabled' : 'Customer — Read-Only Audit Mode'
+                    })`
+                  : 'Unauthenticated Guest — Read-Only Audit Mode (Real customer PII redacted; mutations blocked with HTTP 401)'}
+              </strong>
+            </p>
+          </div>
         </div>
-        <Link to="/account" className="text-[#15803D] font-semibold hover:underline">
+        <Link to="/account" className="text-[#15803D] font-semibold hover:underline shrink-0">
           Manage Auth Session →
         </Link>
       </div>
 
-      {/* Real Store Metrics Strip */}
+      {/* Real Store Metrics Strip (Excludes Demo Seed Orders from Financial Totals) */}
       {metrics && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <div className="bg-white border border-zinc-200 p-4">
-            <span className="text-[11px] text-zinc-500 block">Total Orders</span>
+            <span className="text-[11px] text-zinc-500 block">Real Customer Orders</span>
             <strong className="text-xl font-bold font-mono-num text-zinc-900">
               {metrics.totalOrders}
             </strong>
+            <span className="text-[10px] text-zinc-400 block mt-0.5">
+              +{metrics.demoOrdersCount} labeled demo seed
+            </span>
           </div>
           <div className="bg-white border border-zinc-200 p-4">
-            <span className="text-[11px] text-zinc-500 block">Active Orders</span>
+            <span className="text-[11px] text-zinc-500 block">Active Real Orders</span>
             <strong className="text-xl font-bold font-mono-num text-zinc-900">
               {metrics.activeOrdersCount}
             </strong>
           </div>
           <div className="bg-white border border-zinc-200 p-4">
-            <span className="text-[11px] text-zinc-500 block">Booked Order Value</span>
+            <span className="text-[11px] text-zinc-500 block">Booked Real Order Value</span>
             <strong className="text-xl font-bold font-mono-num text-zinc-900">
               {formatBdt(metrics.totalRevenueBookedBdt)}
             </strong>
@@ -284,7 +330,7 @@ export const AdminDashboardPage: React.FC = () => {
       {/* TAB 1: Order & COD Management */}
       {activeTab === 'orders' && !loading && (
         <div className="bg-white border border-zinc-200 p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 pb-3">
             <div>
               <h2 className="font-display text-xl font-bold uppercase text-zinc-900">
                 Order Fulfillment &amp; Payment Status Control
@@ -294,6 +340,11 @@ export const AdminDashboardPage: React.FC = () => {
                 VERIFIED until cash is collected upon delivery.
               </p>
             </div>
+            {!authorizedAdmin && (
+              <span className="text-[11px] font-medium text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1">
+                Read-Only Preview: Only demonstration order JV-DEMO-0001 is shown to unauthenticated visitors
+              </span>
+            )}
           </div>
 
           <div className="overflow-x-auto">
@@ -313,7 +364,12 @@ export const AdminDashboardPage: React.FC = () => {
                 {orders.map((ord) => (
                   <tr key={ord.orderNumber}>
                     <td className="py-3 pr-4 font-mono-num font-bold text-zinc-900">
-                      {ord.orderNumber}
+                      <span>{ord.orderNumber}</span>
+                      {ord.isDemoOrder && (
+                        <span className="block text-[10px] font-sans font-semibold text-amber-700">
+                          DEMO RECORD
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 pr-4">
                       <span className="font-semibold text-zinc-900 block">{ord.customerName}</span>
@@ -329,6 +385,7 @@ export const AdminDashboardPage: React.FC = () => {
                       <select
                         aria-label={`Fulfillment status for ${ord.orderNumber}`}
                         value={ord.orderStatus}
+                        disabled={!authorizedAdmin}
                         onChange={(e) =>
                           handleOrderUpdate(
                             ord.orderNumber,
@@ -336,7 +393,7 @@ export const AdminDashboardPage: React.FC = () => {
                             ord.paymentStatus
                           )
                         }
-                        className="px-2.5 py-1.5 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num"
+                        className="px-2.5 py-1.5 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num disabled:opacity-60"
                       >
                         <option value="PENDING_CONFIRMATION">PENDING_CONFIRMATION</option>
                         <option value="CONFIRMED">CONFIRMED</option>
@@ -350,6 +407,7 @@ export const AdminDashboardPage: React.FC = () => {
                       <select
                         aria-label={`Payment status for ${ord.orderNumber}`}
                         value={ord.paymentStatus}
+                        disabled={!authorizedAdmin}
                         onChange={(e) =>
                           handleOrderUpdate(
                             ord.orderNumber,
@@ -357,7 +415,7 @@ export const AdminDashboardPage: React.FC = () => {
                             e.target.value as PaymentStatus
                           )
                         }
-                        className="px-2.5 py-1.5 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num"
+                        className="px-2.5 py-1.5 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num disabled:opacity-60"
                       >
                         <option value="UNPAID_COD">UNPAID_COD</option>
                         <option value="PENDING_VERIFICATION">PENDING_VERIFICATION</option>
@@ -389,8 +447,8 @@ export const AdminDashboardPage: React.FC = () => {
               Size-Specific Variant Stock Management
             </h2>
             <p className="text-xs text-zinc-500">
-              Adjust stock counts per size variant (S to XXL). Changes immediately reflect on the
-              storefront catalog and server-side checkout verifier.
+              Adjust stock counts per size variant (S to XXL). Server-side admin authentication is
+              enforced on all stock updates.
             </p>
           </div>
 
@@ -422,20 +480,22 @@ export const AdminDashboardPage: React.FC = () => {
                       <span className="font-bold text-zinc-900">{v.size}:</span>
                       <button
                         type="button"
+                        disabled={!authorizedAdmin}
                         onClick={() =>
                           handleVariantStockUpdate(prod.id, v.size, Math.max(0, v.stock - 1))
                         }
                         aria-label={`Decrease ${prod.name} size ${v.size} stock`}
-                        className="w-5 h-5 bg-zinc-100 hover:bg-zinc-200 font-bold"
+                        className="w-5 h-5 bg-zinc-100 hover:bg-zinc-200 font-bold disabled:opacity-40"
                       >
                         -
                       </button>
                       <span className="w-6 text-center font-semibold">{v.stock}</span>
                       <button
                         type="button"
+                        disabled={!authorizedAdmin}
                         onClick={() => handleVariantStockUpdate(prod.id, v.size, v.stock + 1)}
                         aria-label={`Increase ${prod.name} size ${v.size} stock`}
-                        className="w-5 h-5 bg-zinc-100 hover:bg-zinc-200 font-bold"
+                        className="w-5 h-5 bg-zinc-100 hover:bg-zinc-200 font-bold disabled:opacity-40"
                       >
                         +
                       </button>
@@ -460,7 +520,7 @@ export const AdminDashboardPage: React.FC = () => {
             </h2>
             <p className="text-xs text-zinc-500">
               Modify Inside Dhaka / Outside Dhaka courier rates, free delivery threshold, and the
-              storefront announcement bar.
+              storefront announcement bar (requires verified Admin session).
             </p>
           </div>
 
@@ -474,11 +534,12 @@ export const AdminDashboardPage: React.FC = () => {
             <input
               id="adm-announcement"
               type="text"
+              disabled={!authorizedAdmin}
               value={settingsForm.announcementText}
               onChange={(e) =>
                 setSettingsForm({ ...settingsForm, announcementText: e.target.value })
               }
-              className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs"
+              className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs disabled:opacity-60"
             />
           </div>
 
@@ -494,6 +555,7 @@ export const AdminDashboardPage: React.FC = () => {
                 id="adm-inside-dhaka"
                 type="number"
                 min={0}
+                disabled={!authorizedAdmin}
                 value={settingsForm.insideDhakaShippingBdt}
                 onChange={(e) =>
                   setSettingsForm({
@@ -501,7 +563,7 @@ export const AdminDashboardPage: React.FC = () => {
                     insideDhakaShippingBdt: Number(e.target.value)
                   })
                 }
-                className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num"
+                className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num disabled:opacity-60"
               />
             </div>
 
@@ -516,6 +578,7 @@ export const AdminDashboardPage: React.FC = () => {
                 id="adm-outside-dhaka"
                 type="number"
                 min={0}
+                disabled={!authorizedAdmin}
                 value={settingsForm.outsideDhakaShippingBdt}
                 onChange={(e) =>
                   setSettingsForm({
@@ -523,7 +586,7 @@ export const AdminDashboardPage: React.FC = () => {
                     outsideDhakaShippingBdt: Number(e.target.value)
                   })
                 }
-                className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num"
+                className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num disabled:opacity-60"
               />
             </div>
 
@@ -538,6 +601,7 @@ export const AdminDashboardPage: React.FC = () => {
                 id="adm-free-threshold"
                 type="number"
                 min={0}
+                disabled={!authorizedAdmin}
                 value={settingsForm.freeShippingThresholdBdt}
                 onChange={(e) =>
                   setSettingsForm({
@@ -545,17 +609,20 @@ export const AdminDashboardPage: React.FC = () => {
                     freeShippingThresholdBdt: Number(e.target.value)
                   })
                 }
-                className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num"
+                className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num disabled:opacity-60"
               />
             </div>
           </div>
 
           <button
             type="submit"
-            className="px-6 py-2.5 bg-[#15803D] text-white text-xs font-semibold hover:bg-[#14532D] transition-colors flex items-center gap-2"
+            disabled={!authorizedAdmin}
+            className="px-6 py-2.5 bg-[#15803D] text-white text-xs font-semibold hover:bg-[#14532D] transition-colors flex items-center gap-2 disabled:opacity-50"
           >
             <CheckCircle2 className="w-4 h-4" />
-            <span>Save Store Configuration</span>
+            <span>
+              {authorizedAdmin ? 'Save Store Configuration' : 'Admin Sign-In Required to Save'}
+            </span>
           </button>
         </form>
       )}

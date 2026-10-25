@@ -26,11 +26,9 @@ service cloud.firestore {
     function isOwner(userId) {
       return isVerifiedUser() && request.auth.uid == userId;
     }
+    // Trusted database-backed Administrator check (no hardcoded email or client-writable claim)
     function isAdmin() {
-      return isVerifiedUser() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'chalantika07@gmail.com'
-      );
+      return isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
     }
 
     // Validation Helpers (Pillar 2: Anti-Update-Gap & Blueprint Sync)

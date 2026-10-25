@@ -512,7 +512,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               <strong>supporter tribute jerseys</strong>, never misrepresented as officially licensed club or federation merchandise.
             </p>
             <p className="text-xs text-zinc-400 font-mono-num">
-              Dhaka Dispatch Desk · Support: +880 1711-000000
+              Dhaka Dispatch Desk · Sample Support Line: +880 1700-000000 (Demo Placeholder)
             </p>
           </div>
 

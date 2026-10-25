@@ -151,12 +151,15 @@ export const CheckoutPage: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      const authHeaders = await getAuthHeaders();
       const response = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders
+        },
         body: JSON.stringify({
           idempotencyKey,
-          userId: currentUser?.uid || null,
           customerName: customerName.trim(),
           customerPhone: phoneCheck.normalized,
           customerEmail: customerEmail.trim(),
@@ -186,6 +189,16 @@ export const CheckoutPage: React.FC = () => {
       }
 
       const createdOrder = data.order;
+      if (createdOrder?.orderNumber && data.orderAccessToken) {
+        try {
+          const existingRaw = sessionStorage.getItem('jv_order_tokens_v1');
+          const tokenMap = existingRaw ? JSON.parse(existingRaw) : {};
+          tokenMap[String(createdOrder.orderNumber).toUpperCase()] = String(data.orderAccessToken);
+          sessionStorage.setItem('jv_order_tokens_v1', JSON.stringify(tokenMap));
+        } catch {
+          // ignore storage errors
+        }
+      }
 
       // Save shipping address if checked
       if (saveAddressForNextTime) {
