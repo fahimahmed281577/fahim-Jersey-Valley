@@ -1,6 +1,13 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject
+} from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const clientEnv =
@@ -27,7 +34,37 @@ export const resolvedFirebaseConfig = {
 const app = initializeApp(resolvedFirebaseConfig);
 export const db = getFirestore(app, resolvedFirebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
+
+/**
+ * Uploads a product image file to Firebase Storage under `products/{productId}/`
+ * and returns the public download URL.
+ */
+export async function uploadProductImageToStorage(
+  productId: string,
+  file: File
+): Promise<string> {
+  const safeProductId = productId.replace(/[^a-zA-Z0-9_-]/g, '') || 'draft';
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60);
+  const objectPath = `products/${safeProductId}/${Date.now()}-${safeName}`;
+  const fileRef = storageRef(storage, objectPath);
+  const snapshot = await uploadBytes(fileRef, file, {
+    contentType: file.type || 'image/jpeg'
+  });
+  return getDownloadURL(snapshot.ref);
+}
+
+/**
+ * Deletes an uploaded product image from Firebase Storage if it belongs to this project's bucket.
+ */
+export async function deleteProductImageFromStorage(imageUrl: string): Promise<void> {
+  if (!imageUrl || !imageUrl.includes('firebasestorage.googleapis.com')) {
+    return;
+  }
+  const fileRef = storageRef(storage, imageUrl);
+  await deleteObject(fileRef);
+}
 
 export enum OperationType {
   CREATE = 'create',

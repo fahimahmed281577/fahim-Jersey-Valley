@@ -48,6 +48,10 @@ function createMockAdminFirestore(): Firestore {
       async set(data: Record<string, unknown>) {
         const col = getCollectionMap(colName);
         col.set(docId, structuredClone(data));
+      },
+      async delete() {
+        const col = getCollectionMap(colName);
+        col.delete(docId);
       }
     };
   }
@@ -98,6 +102,11 @@ function createMockAdminFirestore(): Firestore {
             getCollectionMap(docRef._colName).set(docRef._docId, structuredClone(data));
           });
         },
+        delete(docRef: { _colName: string; _docId: string }) {
+          ops.push(() => {
+            getCollectionMap(docRef._colName).delete(docRef._docId);
+          });
+        },
         async commit() {
           for (const op of ops) {
             op();
@@ -113,10 +122,14 @@ function createMockAdminFirestore(): Firestore {
           data: () => Record<string, unknown> | undefined;
         }>;
         set: (docRef: { _colName: string; _docId: string }, data: Record<string, unknown>) => void;
+        delete: (docRef: { _colName: string; _docId: string }) => void;
       }) => Promise<T>
     ): Promise<T> {
       const next = txChain.then(async () => {
-        const stagedWrites: Array<{ colName: string; docId: string; data: Record<string, unknown> }> = [];
+        const stagedOps: Array<
+          | { type: 'set'; colName: string; docId: string; data: Record<string, unknown> }
+          | { type: 'delete'; colName: string; docId: string }
+        > = [];
         const tx = {
           async get(docRef: { _colName: string; _docId: string }) {
             const raw = getCollectionMap(docRef._colName).get(docRef._docId);
@@ -127,16 +140,28 @@ function createMockAdminFirestore(): Firestore {
             };
           },
           set(docRef: { _colName: string; _docId: string }, data: Record<string, unknown>) {
-            stagedWrites.push({
+            stagedOps.push({
+              type: 'set',
               colName: docRef._colName,
               docId: docRef._docId,
               data: structuredClone(data)
             });
+          },
+          delete(docRef: { _colName: string; _docId: string }) {
+            stagedOps.push({
+              type: 'delete',
+              colName: docRef._colName,
+              docId: docRef._docId
+            });
           }
         };
         const result = await updateFn(tx);
-        for (const write of stagedWrites) {
-          getCollectionMap(write.colName).set(write.docId, write.data);
+        for (const op of stagedOps) {
+          if (op.type === 'set') {
+            getCollectionMap(op.colName).set(op.docId, op.data);
+          } else {
+            getCollectionMap(op.colName).delete(op.docId);
+          }
         }
         return result;
       });
@@ -452,3 +477,341 @@ test('TransactionalStoreAdapter persists state to disk snapshot and enforces adm
     }
   }
 });
+
+test('Admin Panel RBAC & Cold-Start Persistence: 401 unauthenticated, 403 non-admin, 200 authorized admin, product CRUD, stock logs, COD verification rules, token redaction, and demo order exclusion', async () => {
+  const previousAdminUids = process.env.ADMIN_UIDS;
+  process.env.ADMIN_UIDS = 'authorized_admin_uid_001';
+
+  try {
+    const sharedFirestore = createMockAdminFirestore();
+    const storeInstanceA = new FirestoreAdminPersistenceAdapter(sharedFirestore);
+    const storeInstanceB = new FirestoreAdminPersistenceAdapter(sharedFirestore);
+
+    const mockTokenVerifier = async (rawToken: string) => {
+      const token = rawToken.trim();
+      if (token === 'valid-admin-token') {
+        return {
+          uid: 'authorized_admin_uid_001',
+          email: 'owner@jerseyvalley.bd',
+          emailVerified: true,
+          isAdminClaim: false,
+          rawClaims: {}
+        };
+      }
+      if (token === 'unverified-admin-token') {
+        return {
+          uid: 'authorized_admin_uid_001',
+          email: 'owner@jerseyvalley.bd',
+          emailVerified: false,
+          isAdminClaim: false,
+          rawClaims: {}
+        };
+      }
+      if (token === 'regular-customer-token') {
+        return {
+          uid: 'customer_uid_999',
+          email: 'customer@example.com',
+          emailVerified: true,
+          isAdminClaim: false,
+          rawClaims: {}
+        };
+      }
+      throw new Error('Invalid Firebase ID token');
+    };
+
+    const appInstanceA = await createJerseyValleyApp({
+      store: storeInstanceA,
+      tokenVerifier: mockTokenVerifier,
+      rateLimitMaxRequests: 200
+    });
+    const appInstanceB = await createJerseyValleyApp({
+      store: storeInstanceB,
+      tokenVerifier: mockTokenVerifier,
+      rateLimitMaxRequests: 200
+    });
+
+    let genuineOrderNumber = '';
+
+    await withServer(appInstanceA, async (urlA) => {
+      // 1. Unauthenticated requests to all protected admin endpoints must return 401
+      const unauthOverview = await fetch(`${urlA}/api/admin/overview`);
+      assert.equal(unauthOverview.status, 401);
+
+      const unauthCustomers = await fetch(`${urlA}/api/admin/customers`);
+      assert.equal(unauthCustomers.status, 401);
+
+      const unauthCreateProd = await fetch(`${urlA}/api/admin/products`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      assert.equal(unauthCreateProd.status, 401);
+
+      // 2. Authenticated non-admin customer receives 403 Forbidden
+      const customerHeaders = {
+        Authorization: 'Bearer regular-customer-token',
+        'Content-Type': 'application/json'
+      };
+      const nonAdminOverview = await fetch(`${urlA}/api/admin/overview`, { headers: customerHeaders });
+      assert.equal(nonAdminOverview.status, 403);
+
+      const nonAdminCustomers = await fetch(`${urlA}/api/admin/customers`, { headers: customerHeaders });
+      assert.equal(nonAdminCustomers.status, 403);
+
+      const nonAdminStock = await fetch(`${urlA}/api/admin/products/arg-home-2026/stock`, {
+        method: 'PATCH',
+        headers: customerHeaders,
+        body: JSON.stringify({ size: 'M', stock: 50 })
+      });
+      assert.equal(nonAdminStock.status, 403);
+
+      // 3. Admin UID with unverified email receives 403 Forbidden
+      const unverifiedAdminOverview = await fetch(`${urlA}/api/admin/overview`, {
+        headers: { Authorization: 'Bearer unverified-admin-token' }
+      });
+      assert.equal(unverifiedAdminOverview.status, 403);
+
+      // 4. Place a genuine COD order first so we can verify stats, COD rules, and token redaction
+      const orderCreateRes = await fetch(`${urlA}/api/orders`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer regular-customer-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          idempotencyKey: 'admin-suite-genuine-order-001',
+          customerName: 'Farhan Sadik',
+          customerPhone: '01755667788',
+          customerEmail: 'customer@example.com',
+          division: 'Dhaka',
+          district: 'Dhaka',
+          upazila: 'Uttara',
+          streetAddress: 'Sector 7, Road 12, Uttara',
+          postalCode: '1230',
+          deliveryNotes: 'Deliver after 4 PM',
+          paymentMethod: 'COD',
+          items: [
+            {
+              productId: 'arg-home-2026',
+              size: 'M',
+              quantity: 2,
+              customName: 'MESSI',
+              customNumber: '10'
+            }
+          ]
+        })
+      });
+      assert.equal(orderCreateRes.status, 201);
+      const orderCreateBody = (await orderCreateRes.json()) as {
+        order: { orderNumber: string; paymentStatus: string; totalBdt: number };
+      };
+      genuineOrderNumber = orderCreateBody.order.orderNumber;
+      assert.equal(
+        orderCreateBody.order.paymentStatus,
+        'UNPAID_COD',
+        'Newly created COD orders must remain UNPAID_COD'
+      );
+
+      // 5. Authorized administrator receives 200 on /api/admin/overview; demo order is excluded from metrics and orderAccessToken is stripped
+      const adminHeaders = {
+        Authorization: 'Bearer valid-admin-token',
+        'Content-Type': 'application/json'
+      };
+      const adminOverviewRes = await fetch(`${urlA}/api/admin/overview`, { headers: adminHeaders });
+      assert.equal(adminOverviewRes.status, 200);
+      const overviewBody = (await adminOverviewRes.json()) as {
+        metrics: {
+          totalOrders: number;
+          demoOrdersCount: number;
+          pendingOrdersCount: number;
+          totalSalesCompletedBdt: number;
+          totalRevenueBookedBdt: number;
+        };
+        orders: Array<{
+          orderNumber: string;
+          isDemoOrder?: boolean;
+          orderAccessToken?: string;
+          idempotencyKey?: string;
+        }>;
+      };
+      assert.equal(
+        overviewBody.metrics.totalOrders,
+        1,
+        'totalOrders must count only genuine orders and exclude DEMO_SEED_ORDER'
+      );
+      assert.equal(overviewBody.metrics.demoOrdersCount, 1);
+      assert.equal(
+        overviewBody.metrics.totalSalesCompletedBdt,
+        0,
+        'totalSalesCompletedBdt must be 0 before order is delivered/verified and must exclude demo seed order'
+      );
+      for (const ord of overviewBody.orders) {
+        assert.equal(ord.orderAccessToken, undefined, 'Admin overview must never expose orderAccessToken');
+        assert.equal(ord.idempotencyKey, undefined, 'Admin overview must never expose idempotencyKey');
+      }
+
+      // 6. Authorized administrator creates a new product with salePriceBdt and imageUrls
+      const createProductRes = await fetch(`${urlA}/api/admin/products`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({
+          name: 'AC Milan 2025/26 Home Fan Replica Jersey',
+          team: 'AC Milan',
+          countryOrLeague: 'Serie A',
+          category: 'club',
+          kitType: 'Home',
+          season: '2025/26',
+          editionTier: 'Fan Replica',
+          gender: 'Unisex',
+          priceBdt: 1750,
+          salePriceBdt: 1490,
+          customPrintPriceBdt: 350,
+          description:
+            'High-grade supporter replica football jersey in classic Rossoneri stripes. Supporter replica apparel, not officially licensed merchandise.',
+          fabricSpec: '100% recycled breathable polyester mesh with woven club crest.',
+          fitNote: 'Regular supporter fit.',
+          careInstructions: 'Machine wash cold inside out.',
+          isActive: true,
+          imageUrls: ['https://firebasestorage.googleapis.com/v0/b/demo/o/ac-milan-front.jpg?alt=media'],
+          variants: [
+            { size: 'S', stock: 6, sku: 'JV-ACM-25-S', isActive: true },
+            { size: 'M', stock: 10, sku: 'JV-ACM-25-M', isActive: true },
+            { size: 'L', stock: 8, sku: 'JV-ACM-25-L', isActive: true }
+          ]
+        })
+      });
+      assert.equal(createProductRes.status, 201);
+      const createdProdBody = (await createProductRes.json()) as {
+        product: { id: string; salePriceBdt: number; imageUrls: string[] };
+      };
+      const createdProductId = createdProdBody.product.id;
+      assert.equal(createdProdBody.product.salePriceBdt, 1490);
+      assert.equal(createdProdBody.product.imageUrls.length, 1);
+
+      // 7. Authorized administrator adjusts stock and records timestamped StockAdjustmentLog
+      const adjustStockRes = await fetch(`${urlA}/api/admin/products/${createdProductId}/stock`, {
+        method: 'PATCH',
+        headers: adminHeaders,
+        body: JSON.stringify({
+          size: 'M',
+          stock: 18,
+          reason: 'RESTOCK_SHIPMENT_DHAKA'
+        })
+      });
+      assert.equal(adjustStockRes.status, 200);
+
+      // 8. Authorized administrator updates store settings and adds a coupon
+      const settingsUpdateRes = await fetch(`${urlA}/api/admin/settings`, {
+        method: 'PATCH',
+        headers: adminHeaders,
+        body: JSON.stringify({
+          insideDhakaShippingBdt: 75,
+          outsideDhakaShippingBdt: 135,
+          supportPhone: '+880 1711-998877',
+          supportEmail: 'help@jerseyvalley.bd',
+          storeAddress: 'Banani Road 11, Dhaka, Bangladesh'
+        })
+      });
+      assert.equal(settingsUpdateRes.status, 200);
+
+      const couponCreateRes = await fetch(`${urlA}/api/admin/coupons`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({
+          code: 'EID2026',
+          description: '15% off orders over 2000 BDT',
+          discountType: 'PERCENTAGE',
+          value: 15,
+          minSubtotalBdt: 2000,
+          maxDiscountBdt: 500,
+          isActive: true
+        })
+      });
+      assert.equal(couponCreateRes.status, 201);
+    });
+
+    // 9. Verify on Serverless Instance B (Cold Start) that product, stock log, settings, coupon, and order updates persist
+    await withServer(appInstanceB, async (urlB) => {
+      const adminHeaders = {
+        Authorization: 'Bearer valid-admin-token',
+        'Content-Type': 'application/json'
+      };
+
+      // Progress order through CONFIRMED -> PROCESSING -> SHIPPED -> DELIVERED + VERIFIED on Instance B
+      for (const nextStatus of ['CONFIRMED', 'PROCESSING', 'SHIPPED'] as const) {
+        const stepRes = await fetch(`${urlB}/api/admin/orders/${genuineOrderNumber}`, {
+          method: 'PATCH',
+          headers: adminHeaders,
+          body: JSON.stringify({ orderStatus: nextStatus })
+        });
+        assert.equal(stepRes.status, 200);
+      }
+
+      const deliverRes = await fetch(`${urlB}/api/admin/orders/${genuineOrderNumber}`, {
+        method: 'PATCH',
+        headers: adminHeaders,
+        body: JSON.stringify({
+          orderStatus: 'DELIVERED',
+          paymentStatus: 'VERIFIED'
+        })
+      });
+      assert.equal(deliverRes.status, 200);
+
+      const overviewResB = await fetch(`${urlB}/api/admin/overview`, { headers: adminHeaders });
+      assert.equal(overviewResB.status, 200);
+      const overviewB = (await overviewResB.json()) as {
+        metrics: {
+          totalOrders: number;
+          deliveredOrdersCount: number;
+          totalSalesCompletedBdt: number;
+        };
+        products: Array<{ id: string; name: string; salePriceBdt?: number | null; variants: Array<{ size: string; stock: number }> }>;
+        stockLogs: Array<{ productId: string; size: string; previousStock: number; newStock: number; delta: number; reason: string; actorEmail: string }>;
+        coupons: Array<{ code: string; value: number }>;
+        settings: { insideDhakaShippingBdt: number; supportPhone: string };
+      };
+
+      assert.equal(overviewB.metrics.totalOrders, 1);
+      assert.equal(overviewB.metrics.deliveredOrdersCount, 1);
+      assert.ok(overviewB.metrics.totalSalesCompletedBdt > 0, 'Delivered & verified genuine order must count in totalSalesCompletedBdt');
+
+      const acMilan = overviewB.products.find((p) => p.name.includes('AC Milan'));
+      assert.ok(acMilan, 'Created product must persist across serverless cold starts');
+      assert.equal(acMilan.salePriceBdt, 1490);
+      assert.equal(acMilan.variants.find((v) => v.size === 'M')?.stock, 18);
+
+      const restockLog = overviewB.stockLogs.find((log) => log.reason === 'RESTOCK_SHIPMENT_DHAKA');
+      assert.ok(restockLog, 'Timestamped StockAdjustmentLog must persist in Firestore');
+      assert.equal(restockLog.previousStock, 10);
+      assert.equal(restockLog.newStock, 18);
+      assert.equal(restockLog.delta, 8);
+      assert.equal(restockLog.actorEmail, 'owner@jerseyvalley.bd');
+
+      assert.equal(overviewB.settings.insideDhakaShippingBdt, 75);
+      assert.equal(overviewB.settings.supportPhone, '+880 1711-998877');
+      assert.ok(overviewB.coupons.some((c) => c.code === 'EID2026'));
+
+      // Verify Customer Directory endpoint on Instance B
+      const customersResB = await fetch(`${urlB}/api/admin/customers`, { headers: adminHeaders });
+      assert.equal(customersResB.status, 200);
+      const customersBody = (await customersResB.json()) as {
+        customers: Array<{
+          email: string;
+          totalOrders: number;
+          orders: Array<{ orderNumber: string; orderAccessToken?: string }>;
+        }>;
+      };
+      const farhanRecord = customersBody.customers.find((c) => c.email === 'customer@example.com');
+      assert.ok(farhanRecord, 'Customer directory must aggregate genuine customer orders');
+      assert.equal(farhanRecord.totalOrders, 1);
+      assert.equal(farhanRecord.orders[0]?.orderAccessToken, undefined, 'Customer directory must strip orderAccessToken');
+    });
+  } finally {
+    if (previousAdminUids === undefined) {
+      delete process.env.ADMIN_UIDS;
+    } else {
+      process.env.ADMIN_UIDS = previousAdminUids;
+    }
+  }
+});
+

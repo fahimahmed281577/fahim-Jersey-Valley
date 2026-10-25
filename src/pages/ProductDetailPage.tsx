@@ -14,7 +14,12 @@ import {
 import { useStore } from '../context/StoreContext';
 import { JerseyVisualizer } from '../components/JerseyVisualizer';
 import { ProductCard } from '../components/ProductCard';
-import { formatBdt, validateCustomization, type JerseySize } from '../lib/commerce';
+import {
+  formatBdt,
+  getEffectiveProductPriceBdt,
+  validateCustomization,
+  type JerseySize
+} from '../lib/commerce';
 
 export const ProductDetailPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
@@ -30,7 +35,8 @@ export const ProductDetailPage: React.FC = () => {
 
   const product = products.find((p) => p.slug === slug);
 
-  const [activeView, setActiveView] = useState<'front' | 'back' | 'detail'>('front');
+  const [activeView, setActiveView] = useState<'front' | 'back' | 'detail' | 'photo'>('front');
+  const [selectedPhotoIdx, setSelectedPhotoIdx] = useState<number>(0);
   const [selectedSize, setSelectedSize] = useState<JerseySize | null>(null);
   const [quantity, setQuantity] = useState<number>(1);
   const [customName, setCustomName] = useState<string>('');
@@ -41,14 +47,17 @@ export const ProductDetailPage: React.FC = () => {
 
   // Reset local state when navigating between products
   useEffect(() => {
-    setActiveView('front');
+    setActiveView(
+      product?.imageUrls && product.imageUrls.length > 0 ? 'photo' : 'front'
+    );
+    setSelectedPhotoIdx(0);
     setSelectedSize(null);
     setQuantity(1);
     setCustomName('');
     setCustomNumber('');
     setFormError(null);
     if (product) {
-      document.title = `${product.name} (${formatBdt(product.priceBdt)}) — Jersey Valley`;
+      document.title = `${product.name} (${formatBdt(getEffectiveProductPriceBdt(product))}) — Jersey Valley`;
     }
     return () => {
       document.title = 'Jersey Valley — Football Jerseys Bangladesh';
@@ -78,10 +87,13 @@ export const ProductDetailPage: React.FC = () => {
 
   const customValidation = validateCustomization(customName, customNumber);
   const hasCustomPrint = customValidation.hasCustomPrint;
+  const effectiveBasePriceBdt = getEffectiveProductPriceBdt(product, selectedVariant?.priceBdt);
+  const hasSalePrice = effectiveBasePriceBdt < product.priceBdt;
   const unitPriceBdt =
-    product.priceBdt + (hasCustomPrint ? product.customPrintPriceBdt : 0);
+    effectiveBasePriceBdt + (hasCustomPrint ? product.customPrintPriceBdt : 0);
   const lineTotalBdt = unitPriceBdt * quantity;
   const saved = isInWishlist(product.id);
+  const uploadedPhotos = Array.isArray(product.imageUrls) ? product.imageUrls : [];
 
   const relatedProducts = products
     .filter((p) => p.id !== product.id && (p.category === product.category || p.featuredRank <= 4))
@@ -162,15 +174,23 @@ export const ProductDetailPage: React.FC = () => {
         {/* Left: Studio Image Gallery */}
         <div className="lg:col-span-7 space-y-4">
           <div className="relative aspect-[4/3] w-full bg-[#EFEFEC] border border-zinc-200 overflow-hidden">
-            <JerseyVisualizer
-              visual={product.visual}
-              team={product.team}
-              editionTier={product.editionTier}
-              view={activeView}
-              customName={customName}
-              customNumber={customNumber}
-              className="w-full h-full"
-            />
+            {activeView === 'photo' && uploadedPhotos[selectedPhotoIdx] ? (
+              <img
+                src={uploadedPhotos[selectedPhotoIdx]}
+                alt={`${product.name} photo ${selectedPhotoIdx + 1}`}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <JerseyVisualizer
+                visual={product.visual}
+                team={product.team}
+                editionTier={product.editionTier}
+                view={activeView === 'photo' ? 'front' : activeView}
+                customName={customName}
+                customNumber={customNumber}
+                className="w-full h-full"
+              />
+            )}
 
             <button
               type="button"
@@ -204,6 +224,32 @@ export const ProductDetailPage: React.FC = () => {
               </button>
             ))}
           </div>
+
+          {uploadedPhotos.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {uploadedPhotos.map((photoUrl, idx) => (
+                <button
+                  key={photoUrl}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPhotoIdx(idx);
+                    setActiveView('photo');
+                  }}
+                  className={`w-16 h-16 border overflow-hidden ${
+                    activeView === 'photo' && selectedPhotoIdx === idx
+                      ? 'border-[#15803D] ring-1 ring-[#15803D]'
+                      : 'border-zinc-300'
+                  }`}
+                >
+                  <img
+                    src={photoUrl}
+                    alt={`${product.name} thumbnail ${idx + 1}`}
+                    className="w-full h-full object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Technical Fabric & Replica Positioning Details */}
           <div className="bg-white border border-zinc-200 p-6 space-y-4">
@@ -245,10 +291,15 @@ export const ProductDetailPage: React.FC = () => {
               {product.name}
             </h1>
 
-            <div className="mt-3 flex items-baseline gap-3">
+            <div className="mt-3 flex flex-wrap items-baseline gap-3">
               <span className="text-2xl font-bold font-mono-num text-zinc-900">
                 {formatBdt(unitPriceBdt)}
               </span>
+              {hasSalePrice && (
+                <span className="text-sm text-zinc-400 line-through font-mono-num">
+                  {formatBdt(product.priceBdt + (hasCustomPrint ? product.customPrintPriceBdt : 0))}
+                </span>
+              )}
               {hasCustomPrint && (
                 <span className="text-xs text-[#15803D] font-mono-num">
                   (Includes +{formatBdt(product.customPrintPriceBdt)} custom print)
@@ -573,15 +624,23 @@ export const ProductDetailPage: React.FC = () => {
               </button>
             </div>
             <div className="aspect-[4/3] w-full bg-[#EFEFEC]">
-              <JerseyVisualizer
-                visual={product.visual}
-                team={product.team}
-                editionTier={product.editionTier}
-                view={activeView}
-                customName={customName}
-                customNumber={customNumber}
-                className="w-full h-full"
-              />
+              {activeView === 'photo' && uploadedPhotos[selectedPhotoIdx] ? (
+                <img
+                  src={uploadedPhotos[selectedPhotoIdx]}
+                  alt={`${product.name} enlarged photo`}
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <JerseyVisualizer
+                  visual={product.visual}
+                  team={product.team}
+                  editionTier={product.editionTier}
+                  view={activeView === 'photo' ? 'front' : activeView}
+                  customName={customName}
+                  customNumber={customNumber}
+                  className="w-full h-full"
+                />
+              )}
             </div>
           </div>
         </div>

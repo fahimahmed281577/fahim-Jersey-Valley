@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Heart } from 'lucide-react';
-import { formatBdt, type Product } from '../lib/commerce';
+import { formatBdt, getEffectiveProductPriceBdt, type Product } from '../lib/commerce';
 import { JerseyVisualizer } from './JerseyVisualizer';
 import { useStore } from '../context/StoreContext';
 
@@ -22,6 +22,13 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
     0
   );
 
+  const effectivePriceBdt = getEffectiveProductPriceBdt(product);
+  const hasSalePrice = effectivePriceBdt < product.priceBdt;
+  const primaryImageUrl =
+    Array.isArray(product.imageUrls) && product.imageUrls.length > 0
+      ? product.imageUrls[0]
+      : null;
+
   return (
     <article className="group bg-white border border-zinc-200 flex flex-col justify-between transition-transform duration-150 hover:-translate-y-0.5 hover:shadow-sm">
       <div>
@@ -32,18 +39,31 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
             className="block w-full h-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#15803D]"
             aria-label={`View ${product.name}`}
           >
-            <JerseyVisualizer
-              visual={product.visual}
-              team={product.team}
-              editionTier={product.editionTier}
-              view="front"
-              className="w-full h-full transition-transform duration-200 group-hover:scale-[1.03]"
-            />
+            {primaryImageUrl ? (
+              <img
+                src={primaryImageUrl}
+                alt={product.name}
+                loading="lazy"
+                className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+              />
+            ) : (
+              <JerseyVisualizer
+                visual={product.visual}
+                team={product.team}
+                editionTier={product.editionTier}
+                view="front"
+                className="w-full h-full transition-transform duration-200 group-hover:scale-[1.03]"
+              />
+            )}
           </Link>
 
           {/* Subtle single text status indicator (unboxed / minimal) */}
           <div className="absolute top-3 left-3 text-[11px] font-medium tracking-wide text-zinc-700 bg-white/90 px-2 py-0.5">
-            {totalStock > 0 ? `${ product.editionTier }` : 'Out of Stock'}
+            {totalStock > 0
+              ? hasSalePrice
+                ? `Sale · ${product.editionTier}`
+                : `${product.editionTier}`
+              : 'Out of Stock'}
           </div>
 
           {/* Functional Wishlist Affordance */}
@@ -84,9 +104,16 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
 
           <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-100">
             <div>
-              <span className="text-[15px] font-semibold text-zinc-900 font-mono-num">
-                {formatBdt(product.priceBdt)}
-              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[15px] font-semibold text-zinc-900 font-mono-num">
+                  {formatBdt(effectivePriceBdt)}
+                </span>
+                {hasSalePrice && (
+                  <span className="text-xs text-zinc-400 line-through font-mono-num">
+                    {formatBdt(product.priceBdt)}
+                  </span>
+                )}
+              </div>
               <span className="block text-[11px] text-zinc-500">
                 Custom print +{formatBdt(product.customPrintPriceBdt)}
               </span>

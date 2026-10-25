@@ -339,6 +339,25 @@ export const AccountPage: React.FC = () => {
                   <Mail className="w-3.5 h-3.5 text-zinc-400" />
                   <span>{currentUser.email}</span>
                 </p>
+                <div className="p-2.5 bg-[#F7F7F5] border border-zinc-200 space-y-1">
+                  <span className="text-[11px] text-zinc-500 block">
+                    Firebase Authentication UID (for <code>ADMIN_UIDS</code>):
+                  </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <code className="font-mono-num text-[11px] font-bold text-zinc-900 break-all">
+                      {currentUser.uid}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(currentUser.uid);
+                      }}
+                      className="px-2 py-1 bg-[#111111] text-white text-[10px] font-semibold hover:bg-[#15803D] shrink-0"
+                    >
+                      Copy UID
+                    </button>
+                  </div>
+                </div>
                 <p>
                   Email Verified:{' '}
                   <strong className="text-zinc-900">
@@ -351,6 +370,16 @@ export const AccountPage: React.FC = () => {
                     {isAdmin ? 'Store Administrator' : 'Customer'}
                   </strong>
                 </p>
+                {isAdmin && (
+                  <div className="pt-2">
+                    <Link
+                      to="/admin"
+                      className="inline-block px-4 py-2 bg-[#15803D] text-white text-xs font-semibold hover:bg-[#14532D]"
+                    >
+                      Open Admin Dashboard →
+                    </Link>
+                  </div>
+                )}
               </div>
             </div>
           )}

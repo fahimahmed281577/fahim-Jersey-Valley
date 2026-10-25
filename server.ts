@@ -13,7 +13,10 @@ import {
 import {
   extractVerifiedUser,
   checkIsServerAdmin,
-  requireAdminMiddleware
+  createRequireAdminMiddleware,
+  verifyFirebaseIdToken,
+  type TokenVerifierFn,
+  type VerifiedFirebaseUser
 } from './src/lib/serverAuth';
 import {
   getDefaultPersistenceAdapter,
@@ -56,15 +59,18 @@ export interface JerseyValleyAppOptions {
   store?: PersistenceAdapter;
   rateLimitMaxRequests?: number;
   rateLimitWindowMs?: number;
+  tokenVerifier?: TokenVerifierFn;
 }
 
 export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   const store: PersistenceAdapter = options?.store ?? getDefaultPersistenceAdapter();
   const rateLimitMax = options?.rateLimitMaxRequests ?? 60;
   const rateLimitWindowMs = options?.rateLimitWindowMs ?? 60_000;
+  const tokenVerifier: TokenVerifierFn = options?.tokenVerifier ?? verifyFirebaseIdToken;
+  const requireAdmin = createRequireAdminMiddleware(tokenVerifier);
 
   const app = express();
-  app.use(express.json({ limit: '256kb' }));
+  app.use(express.json({ limit: '512kb' }));
 
   // Sliding-window rate limiter for API mutation & lookup endpoints
   const rateBuckets = new Map<string, number[]>();
@@ -92,7 +98,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
 
   // 0. Server-Validated Session & Admin RBAC Verification Endpoint
   app.get('/api/auth/me', async (req, res) => {
-    const { user, rawToken, error } = await extractVerifiedUser(req);
+    const { user, rawToken, error } = await extractVerifiedUser(req, tokenVerifier);
     if (!user) {
       return res.json({
         authenticated: false,
@@ -119,8 +125,14 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   // 1. Public Storefront Catalog & Config API (Backed by shared PersistenceAdapter)
   app.get('/api/catalog', async (_req, res) => {
     try {
-      const { products, coupons, settings } = await store.getCatalogAndSettings();
-      return res.json({ products, coupons, settings });
+      const { products, coupons, settings } = await store.getCatalogAndSettings({
+        includeAllCoupons: false
+      });
+      return res.json({
+        products: products.filter((p) => p.isActive),
+        coupons,
+        settings
+      });
     } catch {
       return res.status(500).json({ error: 'Unable to load storefront catalog.' });
     }
@@ -130,7 +142,9 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   app.post('/api/checkout/calculate', async (req, res) => {
     try {
       const { items, couponCode, division, district } = req.body ?? {};
-      const { products, coupons, settings } = await store.getCatalogAndSettings();
+      const { products, coupons, settings } = await store.getCatalogAndSettings({
+        includeAllCoupons: false
+      });
       const result = calculateOrderTotals({
         items: Array.isArray(items) ? items : [],
         catalog: products,
@@ -164,7 +178,6 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       items
     } = req.body ?? {};
 
-    // Mandatory idempotency key validation
     const cleanIdempotencyKey =
       typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
     if (
@@ -178,8 +191,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       });
     }
 
-    // Verify optional customer authentication token (never trust raw userId in body)
-    const { user: verifiedUser, error: tokenError } = await extractVerifiedUser(req);
+    const { user: verifiedUser, error: tokenError } = await extractVerifiedUser(req, tokenVerifier);
     if (req.headers.authorization && tokenError) {
       return res.status(401).json({ error: `Invalid authentication token: ${tokenError}` });
     }
@@ -212,7 +224,6 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       });
     }
 
-    // Server-side validation of Division -> District -> Upazila hierarchy
     const divisionEntry = BANGLADESH_DIVISIONS[cleanDivision];
     if (!divisionEntry) {
       return res.status(400).json({ error: `Invalid Bangladesh division "${cleanDivision}".` });
@@ -270,7 +281,6 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     }
   });
 
-  // Helper to verify whether a requester is authorized to view or cancel a specific order
   async function verifyOrderAccess(
     req: express.Request,
     order: StoredOrder
@@ -282,7 +292,6 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       return { authorized: true };
     }
 
-    // 1. Check per-order receipt token
     const tokenParam = String(
       req.query.token ?? req.headers['x-order-access-token'] ?? req.body?.orderAccessToken ?? ''
     ).trim();
@@ -290,7 +299,6 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       return { authorized: true };
     }
 
-    // 2. Check matching normalized Bangladesh phone number
     const rawPhone = String(req.query.phone ?? req.body?.phone ?? '').trim();
     if (rawPhone) {
       const phoneCheck = validateBangladeshPhone(rawPhone);
@@ -299,8 +307,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       }
     }
 
-    // 3. Check verified Firebase user (order owner or server admin)
-    const { user, rawToken } = await extractVerifiedUser(req);
+    const { user, rawToken } = await extractVerifiedUser(req, tokenVerifier);
     if (user) {
       if (order.userId && user.uid === order.userId) {
         return { authorized: true };
@@ -318,7 +325,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     };
   }
 
-  // 4. Order Lookup & Tracking API (Protected against unauthenticated PII enumeration)
+  // 4. Order Lookup & Tracking API
   app.get('/api/orders/:orderNumber', rateLimitMiddleware('orders-lookup'), async (req, res) => {
     const rawNumber = String(req.params.orderNumber ?? '').trim().toUpperCase();
     try {
@@ -343,7 +350,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
 
   // Customer Order List — strictly requires a verified Firebase Bearer token
   app.get('/api/customer/orders', async (req, res) => {
-    const { user, error } = await extractVerifiedUser(req);
+    const { user, error } = await extractVerifiedUser(req, tokenVerifier);
     if (!user) {
       return res.status(401).json({
         error:
@@ -360,7 +367,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     }
   });
 
-  // Customer Cancellation of Pending Order (Requires ownership verification + atomic stock restoration)
+  // Customer Cancellation of Pending Order
   app.post(
     '/api/orders/:orderNumber/cancel',
     rateLimitMiddleware('orders-cancel'),
@@ -391,75 +398,225 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     }
   );
 
-  // 5. Admin Overview & Management APIs (Protected by Server-Validated Admin RBAC)
-  app.get('/api/admin/overview', async (req, res) => {
-    const { user, rawToken } = await extractVerifiedUser(req);
-    const isAdmin = user ? await checkIsServerAdmin(user, rawToken || undefined) : false;
-    const allowReadonlyPreview = req.query.mode === 'readonly_audit';
+  // ============================================================================
+  // 5. SECURE ADMIN PANEL APIs (Strictly Protected by Server-Side Admin RBAC)
+  // Every /api/admin/* route requires a valid Firebase ID token + verified email
+  // + UID in ADMIN_UIDS (or /admins/{uid} or admin custom claim).
+  // Unauthenticated -> 401 | Authenticated Non-Admin -> 403
+  // ============================================================================
 
-    if (!isAdmin && !allowReadonlyPreview) {
-      return res.status(user ? 403 : 401).json({
-        error:
-          'Administrator authorization required. Sign in with an account listed in /admins/{uid}, ADMIN_UIDS, or carrying a verified admin custom claim.'
-      });
+  app.get(
+    '/api/admin/overview',
+    rateLimitMiddleware('admin-read'),
+    requireAdmin,
+    async (_req, res) => {
+      try {
+        const [
+          { products, coupons, settings },
+          allOrders,
+          stockLogs,
+          customers
+        ] = await Promise.all([
+          store.getCatalogAndSettings({ includeAllCoupons: true }),
+          store.listAllOrders(),
+          store.listStockAdjustmentLogs(60),
+          store.listCustomerDirectory()
+        ]);
+
+        // Genuine customer orders strictly exclude demonstration orders (isDemoOrder: true)
+        const realOrders = allOrders.filter((o) => !o.isDemoOrder);
+        const demoOrders = allOrders.filter((o) => o.isDemoOrder);
+        const activeRealOrders = realOrders.filter((o) => o.orderStatus !== 'CANCELLED');
+
+        const pendingOrdersCount = realOrders.filter(
+          (o) => o.orderStatus === 'PENDING_CONFIRMATION'
+        ).length;
+        const confirmedOrdersCount = realOrders.filter(
+          (o) => o.orderStatus === 'CONFIRMED' || o.orderStatus === 'PROCESSING'
+        ).length;
+        const shippedOrdersCount = realOrders.filter(
+          (o) => o.orderStatus === 'SHIPPED'
+        ).length;
+        const deliveredOrdersCount = realOrders.filter(
+          (o) => o.orderStatus === 'DELIVERED'
+        ).length;
+        const cancelledOrdersCount = realOrders.filter(
+          (o) => o.orderStatus === 'CANCELLED'
+        ).length;
+
+        const totalRevenueBookedBdt = activeRealOrders.reduce(
+          (acc, o) => acc + o.totalBdt,
+          0
+        );
+        const verifiedPaidRevenueBdt = realOrders
+          .filter((o) => o.orderStatus !== 'CANCELLED' && o.paymentStatus === 'VERIFIED')
+          .reduce((acc, o) => acc + o.totalBdt, 0);
+        const totalSalesCompletedBdt = realOrders
+          .filter(
+            (o) =>
+              o.orderStatus !== 'CANCELLED' &&
+              (o.orderStatus === 'DELIVERED' || o.paymentStatus === 'VERIFIED')
+          )
+          .reduce((acc, o) => acc + o.totalBdt, 0);
+        const pendingCodBdt = activeRealOrders
+          .filter((o) => o.paymentStatus === 'UNPAID_COD')
+          .reduce((acc, o) => acc + o.totalBdt, 0);
+
+        const activeProductsCount = products.filter((p) => p.isActive).length;
+        const archivedProductsCount = products.filter((p) => !p.isActive).length;
+
+        const lowStockItems: Array<{
+          productId: string;
+          productName: string;
+          team: string;
+          slug: string;
+          size: JerseySize;
+          sku: string;
+          stock: number;
+        }> = [];
+
+        for (const prod of products) {
+          if (!prod.isActive) continue;
+          for (const variant of prod.variants) {
+            if (variant.isActive && variant.stock <= 5) {
+              lowStockItems.push({
+                productId: prod.id,
+                productName: prod.name,
+                team: prod.team,
+                slug: prod.slug,
+                size: variant.size,
+                sku: variant.sku,
+                stock: variant.stock
+              });
+            }
+          }
+        }
+        lowStockItems.sort((a, b) => a.stock - b.stock);
+
+        const totalStockUnits = products.reduce(
+          (acc, p) => acc + p.variants.reduce((vAcc, v) => vAcc + v.stock, 0),
+          0
+        );
+
+        const sanitizedOrders = allOrders.map(sanitizeOrderForClient);
+
+        return res.json({
+          authorizedAdmin: true,
+          persistenceBackend: store.backendType,
+          metrics: {
+            totalOrders: realOrders.length,
+            pendingOrdersCount,
+            confirmedOrdersCount,
+            shippedOrdersCount,
+            deliveredOrdersCount,
+            cancelledOrdersCount,
+            demoOrdersCount: demoOrders.length,
+            activeOrdersCount: activeRealOrders.length,
+            totalSalesCompletedBdt,
+            totalRevenueBookedBdt,
+            verifiedPaidRevenueBdt,
+            pendingCodBdt,
+            totalProducts: products.length,
+            activeProductsCount,
+            archivedProductsCount,
+            lowStockVariantsCount: lowStockItems.length,
+            totalStockUnits
+          },
+          lowStockItems,
+          recentOrders: sanitizedOrders.slice(0, 8),
+          orders: sanitizedOrders,
+          products,
+          coupons,
+          stockLogs,
+          customers,
+          settings
+        });
+      } catch {
+        return res.status(500).json({ error: 'Unable to load admin overview.' });
+      }
     }
+  );
 
-    try {
-      const [{ products, coupons, settings }, allOrders] = await Promise.all([
-        store.getCatalogAndSettings(),
-        store.listAllOrders()
-      ]);
-
-      // Real orders vs sample demonstration orders are strictly separated in financial metrics
-      const realOrders = allOrders.filter((o) => !o.isDemoOrder);
-      const demoOrders = allOrders.filter((o) => o.isDemoOrder);
-      const activeRealOrders = realOrders.filter((o) => o.orderStatus !== 'CANCELLED');
-
-      const totalRevenueBookedBdt = activeRealOrders.reduce((acc, o) => acc + o.totalBdt, 0);
-      const verifiedPaidRevenueBdt = realOrders
-        .filter((o) => o.paymentStatus === 'VERIFIED')
-        .reduce((acc, o) => acc + o.totalBdt, 0);
-      const pendingCodBdt = activeRealOrders
-        .filter((o) => o.paymentStatus === 'UNPAID_COD')
-        .reduce((acc, o) => acc + o.totalBdt, 0);
-
-      const totalStockUnits = products.reduce(
-        (acc, p) => acc + p.variants.reduce((vAcc, v) => vAcc + v.stock, 0),
-        0
-      );
-
-      // Non-admin read-only preview never receives real customer orders or customer PII
-      const visibleOrders = isAdmin
-        ? allOrders.map(sanitizeOrderForClient)
-        : demoOrders.map(sanitizeOrderForClient);
-
-      return res.json({
-        authorizedAdmin: isAdmin,
-        persistenceBackend: store.backendType,
-        metrics: {
-          totalOrders: realOrders.length,
-          demoOrdersCount: demoOrders.length,
-          activeOrdersCount: activeRealOrders.length,
-          totalRevenueBookedBdt,
-          verifiedPaidRevenueBdt,
-          pendingCodBdt,
-          totalProducts: products.length,
-          totalStockUnits
-        },
-        orders: visibleOrders,
-        products,
-        coupons,
-        settings
-      });
-    } catch {
-      return res.status(500).json({ error: 'Unable to load admin overview.' });
+  // Admin Customer Directory & Order History API
+  app.get(
+    '/api/admin/customers',
+    rateLimitMiddleware('admin-read'),
+    requireAdmin,
+    async (_req, res) => {
+      try {
+        const customers = await store.listCustomerDirectory();
+        return res.json({ customers });
+      } catch {
+        return res.status(500).json({ error: 'Unable to load customer directory.' });
+      }
     }
-  });
+  );
 
+  // Admin Create Product API
+  app.post(
+    '/api/admin/products',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      try {
+        const product = await store.createProductAtomic(req.body ?? {});
+        return res.status(201).json({ product });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to create product.' });
+      }
+    }
+  );
+
+  // Admin Edit Product API
+  app.put(
+    '/api/admin/products/:productId',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      const productId = String(req.params.productId ?? '').trim();
+      try {
+        const product = await store.updateProductAtomic(productId, req.body ?? {});
+        return res.json({ product });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to update product.' });
+      }
+    }
+  );
+
+  // Admin Archive / Restore Product API
+  app.patch(
+    '/api/admin/products/:productId/archive',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      const productId = String(req.params.productId ?? '').trim();
+      const { isActive } = req.body ?? {};
+      try {
+        const product = await store.setProductArchiveStateAtomic(
+          productId,
+          Boolean(isActive)
+        );
+        return res.json({ product });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to archive/restore product.' });
+      }
+    }
+  );
+
+  // Admin Order Status & Payment Status Update API
   app.patch(
     '/api/admin/orders/:orderNumber',
     rateLimitMiddleware('admin-write'),
-    requireAdminMiddleware,
+    requireAdmin,
     async (req, res) => {
       const orderNumber = String(req.params.orderNumber ?? '').trim().toUpperCase();
       const { orderStatus, paymentStatus, note } = req.body ?? {};
@@ -489,19 +646,26 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     }
   );
 
+  // Admin Variant Stock & Price Adjustment API (Records timestamped StockAdjustmentLog)
   app.patch(
     '/api/admin/products/:productId/stock',
     rateLimitMiddleware('admin-write'),
-    requireAdminMiddleware,
+    requireAdmin,
     async (req, res) => {
       const productId = String(req.params.productId ?? '').trim();
-      const { size, stock, priceBdt } = req.body ?? {};
+      const { size, stock, priceBdt, reason } = req.body ?? {};
+      const adminUser = (
+        req as express.Request & { verifiedAdminUser?: VerifiedFirebaseUser }
+      ).verifiedAdminUser;
       try {
         const product = await store.updateVariantStockAtomic({
           productId,
           size: size as JerseySize,
           stock,
-          priceBdt
+          priceBdt,
+          reason: typeof reason === 'string' ? reason : undefined,
+          actorUid: adminUser?.uid || 'admin',
+          actorEmail: adminUser?.email || 'admin'
         });
         return res.json({ product });
       } catch (err) {
@@ -513,16 +677,21 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     }
   );
 
+  // Admin Store Settings Update API
   app.patch(
     '/api/admin/settings',
     rateLimitMiddleware('admin-write'),
-    requireAdminMiddleware,
+    requireAdmin,
     async (req, res) => {
       const {
         announcementText,
         insideDhakaShippingBdt,
         outsideDhakaShippingBdt,
-        freeShippingThresholdBdt
+        freeShippingThresholdBdt,
+        returnWindowDays,
+        supportPhone,
+        supportEmail,
+        storeAddress
       } = req.body ?? {};
 
       try {
@@ -530,7 +699,11 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
           announcementText,
           insideDhakaShippingBdt,
           outsideDhakaShippingBdt,
-          freeShippingThresholdBdt
+          freeShippingThresholdBdt,
+          returnWindowDays,
+          supportPhone,
+          supportEmail,
+          storeAddress
         });
         return res.json({ settings });
       } catch (err) {
@@ -538,6 +711,43 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
           return res.status(err.statusCode).json({ error: err.message });
         }
         return res.status(500).json({ error: 'Unable to update site settings.' });
+      }
+    }
+  );
+
+  // Admin Coupon Create / Update API
+  app.post(
+    '/api/admin/coupons',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      try {
+        const coupon = await store.upsertCouponAtomic(req.body ?? {});
+        return res.status(201).json({ coupon });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to save coupon.' });
+      }
+    }
+  );
+
+  // Admin Coupon Deactivate / Delete API
+  app.delete(
+    '/api/admin/coupons/:code',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      const code = String(req.params.code ?? '').trim().toUpperCase();
+      try {
+        await store.deleteCouponAtomic(code);
+        return res.json({ deleted: true, code });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to delete coupon.' });
       }
     }
   );

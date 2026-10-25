@@ -9,6 +9,9 @@ export const INITIAL_SITE_SETTINGS: SiteSettingsConfig = {
   bkashMerchantEnabled: false,
   nagadMerchantEnabled: false,
   returnWindowDays: 7,
+  supportPhone: '01711-000000',
+  supportEmail: 'support@jerseyvalley.com.bd',
+  storeAddress: 'Panthapath, Dhaka 1215, Bangladesh',
   updatedAt: '2026-10-25T04:00:00.000Z'
 };
 

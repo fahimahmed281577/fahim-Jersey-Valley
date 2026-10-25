@@ -27,6 +27,7 @@ import {
 } from '../lib/firebase';
 import {
   validateCustomization,
+  getEffectiveProductPriceBdt,
   type Product,
   type CouponDefinition,
   type SiteSettingsConfig,
@@ -338,8 +339,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         };
       }
 
+      const effectiveBasePrice = getEffectiveProductPriceBdt(product, variant.priceBdt);
       const unitPriceBdt =
-        variant.priceBdt + (customCheck.hasCustomPrint ? product.customPrintPriceBdt : 0);
+        effectiveBasePrice + (customCheck.hasCustomPrint ? product.customPrintPriceBdt : 0);
 
       setCart((prev) => {
         if (existingLine) {
@@ -360,7 +362,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             editionTier: product.editionTier,
             size,
             quantity,
-            baseUnitPriceBdt: variant.priceBdt,
+            baseUnitPriceBdt: effectiveBasePrice,
             customPrintPriceBdt: customCheck.hasCustomPrint ? product.customPrintPriceBdt : 0,
             customName: customCheck.customName,
             customNumber: customCheck.customNumber,

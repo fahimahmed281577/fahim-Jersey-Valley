@@ -244,10 +244,15 @@ export async function checkIsServerAdmin(
   return false;
 }
 
+export type TokenVerifierFn = (rawToken: string) => Promise<VerifiedFirebaseUser>;
+
 /**
  * Extracts and verifies a Bearer token from an Express request if present.
  */
-export async function extractVerifiedUser(req: Request): Promise<{
+export async function extractVerifiedUser(
+  req: Request,
+  verifyFn: TokenVerifierFn = verifyFirebaseIdToken
+): Promise<{
   user: VerifiedFirebaseUser | null;
   rawToken: string | null;
   error?: string;
@@ -263,7 +268,7 @@ export async function extractVerifiedUser(req: Request): Promise<{
   }
 
   try {
-    const user = await verifyFirebaseIdToken(rawToken);
+    const user = await verifyFn(rawToken);
     return { user, rawToken };
   } catch (err) {
     return {
@@ -274,32 +279,48 @@ export async function extractVerifiedUser(req: Request): Promise<{
   }
 }
 
+export function createRequireAdminMiddleware(
+  verifyFn: TokenVerifierFn = verifyFirebaseIdToken
+) {
+  return async function requireAdmin(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    const { user, rawToken, error } = await extractVerifiedUser(req, verifyFn);
+    if (!user) {
+      res.status(401).json({
+        error:
+          error ||
+          'Authentication required. Provide a valid Firebase ID token in the Authorization Bearer header.'
+      });
+      return;
+    }
+
+    if (!user.emailVerified) {
+      res.status(403).json({
+        error:
+          'Administrator access requires a verified email address (email_verified: true).'
+      });
+      return;
+    }
+
+    const isAdmin = await checkIsServerAdmin(user, rawToken || undefined);
+    if (!isAdmin) {
+      res.status(403).json({
+        error:
+          'Administrator privileges required. Your account does not have an /admins/{uid} record, ADMIN_UIDS entry, or admin custom claim.'
+      });
+      return;
+    }
+
+    (req as Request & { verifiedAdminUser?: VerifiedFirebaseUser }).verifiedAdminUser = user;
+    next();
+  };
+}
+
 /**
  * Express middleware that strictly requires a verified administrator session.
  */
-export async function requireAdminMiddleware(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  const { user, rawToken, error } = await extractVerifiedUser(req);
-  if (!user) {
-    res.status(401).json({
-      error:
-        error ||
-        'Authentication required. Provide a valid Firebase ID token in the Authorization Bearer header.'
-    });
-    return;
-  }
+export const requireAdminMiddleware = createRequireAdminMiddleware();
 
-  const isAdmin = await checkIsServerAdmin(user, rawToken || undefined);
-  if (!isAdmin) {
-    res.status(403).json({
-      error:
-        'Administrator privileges required. Your account does not have an /admins/{uid} record, ADMIN_UIDS entry, or admin custom claim.'
-    });
-    return;
-  }
-
-  next();
-}

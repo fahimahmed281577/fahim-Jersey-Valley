@@ -48,6 +48,7 @@ export interface Product {
   gender: GenderFit;
   season: string;
   priceBdt: number;
+  salePriceBdt?: number | null;
   customPrintPriceBdt: number;
   description: string;
   fabricSpec: string;
@@ -60,6 +61,22 @@ export interface Product {
   updatedAt: string;
   variants: SizeVariant[];
   visual: KitVisualSpec;
+  imageUrls?: string[];
+}
+
+export function getEffectiveProductPriceBdt(
+  product: Pick<Product, 'priceBdt' | 'salePriceBdt'>,
+  variantPriceBdt?: number
+): number {
+  if (
+    typeof product.salePriceBdt === 'number' &&
+    Number.isFinite(product.salePriceBdt) &&
+    product.salePriceBdt > 0 &&
+    product.salePriceBdt < product.priceBdt
+  ) {
+    return Math.round(product.salePriceBdt);
+  }
+  return Math.round(variantPriceBdt ?? product.priceBdt);
 }
 
 export interface CartItemInput {
@@ -106,6 +123,9 @@ export interface SiteSettingsConfig {
   bkashMerchantEnabled: boolean;
   nagadMerchantEnabled: boolean;
   returnWindowDays: number;
+  supportPhone?: string;
+  supportEmail?: string;
+  storeAddress?: string;
   updatedAt: string;
 }
 
@@ -503,7 +523,7 @@ export function calculateOrderTotals(params: {
       };
     }
 
-    const baseUnitPriceBdt = variant.priceBdt;
+    const baseUnitPriceBdt = getEffectiveProductPriceBdt(product, variant.priceBdt);
     const customPrintUnitFeeBdt = customCheck.hasCustomPrint ? product.customPrintPriceBdt : 0;
     const finalUnitPriceBdt = baseUnitPriceBdt + customPrintUnitFeeBdt;
     const lineTotalBdt = finalUnitPriceBdt * rawItem.quantity;
@@ -630,7 +650,7 @@ export function filterAndSortProducts(
     }
 
     if (typeof filters.maxPriceBdt === 'number' && filters.maxPriceBdt > 0) {
-      if (product.priceBdt > filters.maxPriceBdt) return false;
+      if (getEffectiveProductPriceBdt(product) > filters.maxPriceBdt) return false;
     }
 
     const totalStock = product.variants.reduce((acc, v) => acc + (v.isActive ? v.stock : 0), 0);
@@ -652,9 +672,9 @@ export function filterAndSortProducts(
   const sortBy = filters.sortBy ?? 'featured';
 
   if (sortBy === 'price-asc') {
-    sorted.sort((a, b) => a.priceBdt - b.priceBdt);
+    sorted.sort((a, b) => getEffectiveProductPriceBdt(a) - getEffectiveProductPriceBdt(b));
   } else if (sortBy === 'price-desc') {
-    sorted.sort((a, b) => b.priceBdt - a.priceBdt);
+    sorted.sort((a, b) => getEffectiveProductPriceBdt(b) - getEffectiveProductPriceBdt(a));
   } else if (sortBy === 'newest') {
     sorted.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   } else {
@@ -698,11 +718,19 @@ export function validateOrderStateTransition(params: {
     return { allowed: true };
   }
 
-  // Admin rules: cannot mark DELIVERED if CANCELLED
-  if (currentOrderStatus === 'CANCELLED' && nextOrderStatus === 'DELIVERED') {
+  // Admin rules: cannot mark a cancelled order as delivered or reopen a cancelled order
+  if (currentOrderStatus === 'CANCELLED' && nextOrderStatus !== 'CANCELLED') {
     return {
       allowed: false,
-      error: 'A cancelled order cannot be marked as delivered.'
+      error: 'A cancelled order cannot be reopened or marked as delivered.'
+    };
+  }
+
+  // Cannot mark a cancelled order as paid (VERIFIED)
+  if (nextOrderStatus === 'CANCELLED' && nextPaymentStatus === 'VERIFIED') {
+    return {
+      allowed: false,
+      error: 'A cancelled order cannot be marked as VERIFIED (paid).'
     };
   }
 

@@ -6,6 +6,8 @@ import {
   calculateOrderTotals,
   validateOrderStateTransition,
   type Product,
+  type SizeVariant,
+  type KitVisualSpec,
   type CouponDefinition,
   type SiteSettingsConfig,
   type PricedOrderItem,
@@ -13,6 +15,10 @@ import {
   type PaymentStatus,
   type OrderStatus,
   type JerseySize,
+  type JerseyCategory,
+  type KitType,
+  type EditionTier,
+  type GenderFit,
   type CartItemInput
 } from './commerce';
 import {
@@ -59,6 +65,71 @@ export interface StoredOrder {
   }[];
 }
 
+export interface StockAdjustmentLog {
+  id: string;
+  productId: string;
+  productName: string;
+  size: JerseySize;
+  previousStock: number;
+  newStock: number;
+  delta: number;
+  reason: string;
+  actorUid: string;
+  actorEmail: string;
+  timestamp: string;
+}
+
+export interface CustomerDirectoryRecord {
+  customerKey: string;
+  uid: string | null;
+  name: string;
+  email: string;
+  phone: string;
+  division: string;
+  district: string;
+  upazila: string;
+  streetAddress: string;
+  isRegisteredUser: boolean;
+  totalOrders: number;
+  totalSpentBdt: number;
+  lastOrderAt: string | null;
+  orders: Array<Omit<StoredOrder, 'orderAccessToken' | 'idempotencyKey'>>;
+}
+
+export interface UpsertProductInput {
+  id?: string;
+  slug?: string;
+  name: string;
+  team: string;
+  countryOrLeague?: string;
+  category: JerseyCategory;
+  kitType: KitType;
+  editionTier: EditionTier;
+  gender?: GenderFit;
+  season?: string;
+  priceBdt: number;
+  salePriceBdt?: number | null;
+  customPrintPriceBdt?: number;
+  description: string;
+  fabricSpec?: string;
+  fitNote?: string;
+  careInstructions?: string;
+  isActive?: boolean;
+  isDemo?: boolean;
+  featuredRank?: number;
+  imageUrls?: string[];
+  variants?: Array<{
+    size: JerseySize;
+    sku?: string;
+    priceBdt?: number;
+    stock: number;
+    isActive?: boolean;
+    chestInches?: string;
+    lengthInches?: string;
+  }>;
+  visual?: Partial<KitVisualSpec>;
+}
+
 export class StoreError extends Error {
   public readonly statusCode: number;
 
@@ -86,9 +157,25 @@ export interface CreateOrderTransactionInput {
   items: CartItemInput[];
 }
 
+export type SiteSettingsPatch = Partial<
+  Pick<
+    SiteSettingsConfig,
+    | 'announcementText'
+    | 'insideDhakaShippingBdt'
+    | 'outsideDhakaShippingBdt'
+    | 'freeShippingThresholdBdt'
+    | 'returnWindowDays'
+    | 'supportPhone'
+    | 'supportEmail'
+    | 'storeAddress'
+  >
+>;
+
 export interface PersistenceAdapter {
   readonly backendType: 'firestore-admin' | 'transactional-store';
-  getCatalogAndSettings(): Promise<{
+  getCatalogAndSettings(options?: {
+    includeAllCoupons?: boolean;
+  }): Promise<{
     products: Product[];
     coupons: CouponDefinition[];
     settings: SiteSettingsConfig;
@@ -115,18 +202,18 @@ export interface PersistenceAdapter {
     size: JerseySize;
     stock?: number;
     priceBdt?: number;
+    reason?: string;
+    actorUid?: string;
+    actorEmail?: string;
   }): Promise<Product>;
-  updateSiteSettingsAtomic(
-    patch: Partial<
-      Pick<
-        SiteSettingsConfig,
-        | 'announcementText'
-        | 'insideDhakaShippingBdt'
-        | 'outsideDhakaShippingBdt'
-        | 'freeShippingThresholdBdt'
-      >
-    >
-  ): Promise<SiteSettingsConfig>;
+  createProductAtomic(input: UpsertProductInput): Promise<Product>;
+  updateProductAtomic(productId: string, input: Partial<UpsertProductInput>): Promise<Product>;
+  setProductArchiveStateAtomic(productId: string, isActive: boolean): Promise<Product>;
+  listStockAdjustmentLogs(limit?: number): Promise<StockAdjustmentLog[]>;
+  upsertCouponAtomic(coupon: CouponDefinition): Promise<CouponDefinition>;
+  deleteCouponAtomic(code: string): Promise<void>;
+  listCustomerDirectory(): Promise<CustomerDirectoryRecord[]>;
+  updateSiteSettingsAtomic(patch: SiteSettingsPatch): Promise<SiteSettingsConfig>;
 }
 
 export const DEMO_SEED_ORDER: StoredOrder = {
@@ -212,16 +299,532 @@ export function isNagadConfiguredFromEnv(): boolean {
 
 function withEnvGatewayFlags(settings: SiteSettingsConfig): SiteSettingsConfig {
   return {
+    ...INITIAL_SITE_SETTINGS,
     ...settings,
     bkashMerchantEnabled: isBkashConfiguredFromEnv(),
     nagadMerchantEnabled: isNagadConfiguredFromEnv()
   };
 }
 
+const ALL_JERSEY_SIZES: JerseySize[] = ['S', 'M', 'L', 'XL', 'XXL'];
+const DEFAULT_SIZE_MEASUREMENTS: Record<JerseySize, { chestInches: string; lengthInches: string }> =
+  {
+    S: { chestInches: '37–38"', lengthInches: '27"' },
+    M: { chestInches: '39–40"', lengthInches: '28"' },
+    L: { chestInches: '41–42"', lengthInches: '29"' },
+    XL: { chestInches: '43–44"', lengthInches: '30"' },
+    XXL: { chestInches: '45–46"', lengthInches: '31"' }
+  };
+
+const VALID_CATEGORIES: JerseyCategory[] = ['national', 'club', 'retro'];
+const VALID_KIT_TYPES: KitType[] = ['Home', 'Away', 'Third', 'Retro', 'Special'];
+const VALID_EDITION_TIERS: EditionTier[] = [
+  'Fan Replica',
+  'Player Fit Replica',
+  'Heritage Retro Replica'
+];
+const VALID_GENDERS: GenderFit[] = ['Men', 'Women', 'Kids', 'Unisex'];
+const VALID_PATTERNS: KitVisualSpec['pattern'][] = [
+  'stripes',
+  'solid',
+  'halves',
+  'pinstripe',
+  'hoops',
+  'sash'
+];
+const VALID_COLLARS: KitVisualSpec['collarStyle'][] = ['crew', 'v-neck', 'polo'];
+
+function slugifyProductName(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+function validateImageUrls(rawUrls: unknown): string[] {
+  if (!Array.isArray(rawUrls)) return [];
+  const cleaned: string[] = [];
+  for (const item of rawUrls) {
+    if (typeof item !== 'string') continue;
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    if (
+      !trimmed.startsWith('https://') &&
+      !trimmed.startsWith('http://') &&
+      !trimmed.startsWith('data:image/')
+    ) {
+      throw new StoreError(
+        400,
+        'Product image URLs must start with https:// or be a valid uploaded image.'
+      );
+    }
+    if (trimmed.length > 250_000) {
+      throw new StoreError(400, 'Product image URL or inline payload exceeds maximum size.');
+    }
+    cleaned.push(trimmed);
+  }
+  if (cleaned.length > 6) {
+    throw new StoreError(400, 'A product can have at most 6 gallery images.');
+  }
+  return cleaned;
+}
+
+function validateAndBuildProduct(
+  input: UpsertProductInput,
+  existingProduct?: Product
+): Product {
+  const nowIso = new Date().toISOString();
+  const name = String(input.name ?? existingProduct?.name ?? '').trim();
+  if (name.length < 3 || name.length > 120) {
+    throw new StoreError(400, 'Product name must be between 3 and 120 characters.');
+  }
+
+  const team = String(input.team ?? existingProduct?.team ?? '').trim();
+  if (team.length < 2 || team.length > 60) {
+    throw new StoreError(400, 'Team name must be between 2 and 60 characters.');
+  }
+
+  const category = (input.category ?? existingProduct?.category ?? 'club') as JerseyCategory;
+  if (!VALID_CATEGORIES.includes(category)) {
+    throw new StoreError(400, 'Invalid jersey category. Must be national, club, or retro.');
+  }
+
+  const kitType = (input.kitType ?? existingProduct?.kitType ?? 'Home') as KitType;
+  if (!VALID_KIT_TYPES.includes(kitType)) {
+    throw new StoreError(400, 'Invalid kit type. Must be Home, Away, Third, Retro, or Special.');
+  }
+
+  const editionTier = (input.editionTier ??
+    existingProduct?.editionTier ??
+    'Fan Replica') as EditionTier;
+  if (!VALID_EDITION_TIERS.includes(editionTier)) {
+    throw new StoreError(
+      400,
+      'Invalid edition tier. Must be Fan Replica, Player Fit Replica, or Heritage Retro Replica.'
+    );
+  }
+
+  const gender = (input.gender ?? existingProduct?.gender ?? 'Unisex') as GenderFit;
+  if (!VALID_GENDERS.includes(gender)) {
+    throw new StoreError(400, 'Invalid gender fit.');
+  }
+
+  const priceBdt = Number(input.priceBdt ?? existingProduct?.priceBdt ?? 0);
+  if (!Number.isFinite(priceBdt) || priceBdt < 300 || priceBdt > 25000) {
+    throw new StoreError(400, 'Regular price must be between ৳300 and ৳25,000.');
+  }
+  const roundedPriceBdt = Math.round(priceBdt);
+
+  let roundedSalePriceBdt: number | null = null;
+  const rawSale =
+    input.salePriceBdt !== undefined ? input.salePriceBdt : existingProduct?.salePriceBdt;
+  if (rawSale !== null && rawSale !== undefined && String(rawSale).trim() !== '') {
+    const numSale = Number(rawSale);
+    if (!Number.isFinite(numSale) || numSale < 200 || numSale >= roundedPriceBdt) {
+      throw new StoreError(
+        400,
+        `Sale price must be at least ৳200 and strictly less than the regular price (৳${roundedPriceBdt}).`
+      );
+    }
+    roundedSalePriceBdt = Math.round(numSale);
+  }
+
+  const customPrintPriceBdt = Number(
+    input.customPrintPriceBdt ?? existingProduct?.customPrintPriceBdt ?? 350
+  );
+  if (
+    !Number.isFinite(customPrintPriceBdt) ||
+    customPrintPriceBdt < 0 ||
+    customPrintPriceBdt > 5000
+  ) {
+    throw new StoreError(400, 'Custom printing fee must be between ৳0 and ৳5,000.');
+  }
+
+  const description = String(input.description ?? existingProduct?.description ?? '').trim();
+  if (description.length < 10 || description.length > 1500) {
+    throw new StoreError(400, 'Product description must be between 10 and 1,500 characters.');
+  }
+
+  const slug = slugifyProductName(input.slug || existingProduct?.slug || name);
+  if (!slug || slug.length < 3) {
+    throw new StoreError(400, 'A valid URL slug is required.');
+  }
+
+  const id =
+    existingProduct?.id ||
+    (input.id && /^[a-z0-9-]+$/.test(input.id.trim())
+      ? input.id.trim()
+      : `${slug.slice(0, 32)}-${crypto.randomBytes(2).toString('hex')}`);
+
+  const crestCode = String(
+    input.visual?.crestCode ??
+      existingProduct?.visual?.crestCode ??
+      team.slice(0, 3).toUpperCase()
+  )
+    .trim()
+    .toUpperCase()
+    .slice(0, 4);
+
+  const primaryColor = String(
+    input.visual?.primaryColor ?? existingProduct?.visual?.primaryColor ?? '#111111'
+  ).trim();
+  const secondaryColor = String(
+    input.visual?.secondaryColor ?? existingProduct?.visual?.secondaryColor ?? '#FFFFFF'
+  ).trim();
+  const accentColor = String(
+    input.visual?.accentColor ?? existingProduct?.visual?.accentColor ?? '#15803D'
+  ).trim();
+  const textColor = String(
+    input.visual?.textColor ?? existingProduct?.visual?.textColor ?? '#FFFFFF'
+  ).trim();
+
+  const pattern = (input.visual?.pattern ??
+    existingProduct?.visual?.pattern ??
+    'solid') as KitVisualSpec['pattern'];
+  const collarStyle = (input.visual?.collarStyle ??
+    existingProduct?.visual?.collarStyle ??
+    'crew') as KitVisualSpec['collarStyle'];
+
+  const visual: KitVisualSpec = {
+    primaryColor: /^#[0-9A-Fa-f]{3,8}$/.test(primaryColor) ? primaryColor : '#111111',
+    secondaryColor: /^#[0-9A-Fa-f]{3,8}$/.test(secondaryColor) ? secondaryColor : '#FFFFFF',
+    accentColor: /^#[0-9A-Fa-f]{3,8}$/.test(accentColor) ? accentColor : '#15803D',
+    textColor: /^#[0-9A-Fa-f]{3,8}$/.test(textColor) ? textColor : '#FFFFFF',
+    pattern: VALID_PATTERNS.includes(pattern) ? pattern : 'solid',
+    collarStyle: VALID_COLLARS.includes(collarStyle) ? collarStyle : 'crew',
+    crestCode: crestCode || 'JVY',
+    defaultPreviewName: String(
+      input.visual?.defaultPreviewName ?? existingProduct?.visual?.defaultPreviewName ?? 'SUPPORTER'
+    )
+      .trim()
+      .toUpperCase()
+      .slice(0, 12),
+    defaultPreviewNumber: String(
+      input.visual?.defaultPreviewNumber ?? existingProduct?.visual?.defaultPreviewNumber ?? '10'
+    )
+      .trim()
+      .slice(0, 2)
+  };
+
+  const variants: SizeVariant[] = ALL_JERSEY_SIZES.map((size) => {
+    const incomingVar = input.variants?.find((v) => v.size === size);
+    const existingVar = existingProduct?.variants.find((v) => v.size === size);
+    const rawStock = incomingVar?.stock ?? existingVar?.stock ?? 10;
+    if (!Number.isFinite(rawStock) || rawStock < 0 || rawStock > 5000) {
+      throw new StoreError(400, `Stock for size ${size} must be between 0 and 5000.`);
+    }
+    return {
+      size,
+      sku:
+        incomingVar?.sku?.trim() ||
+        existingVar?.sku ||
+        `JV-${crestCode || 'KIT'}-${id.slice(0, 4).toUpperCase()}-${size}`,
+      priceBdt: roundedPriceBdt,
+      stock: Math.floor(rawStock),
+      isActive: incomingVar?.isActive ?? existingVar?.isActive ?? true,
+      chestInches:
+        incomingVar?.chestInches ||
+        existingVar?.chestInches ||
+        DEFAULT_SIZE_MEASUREMENTS[size].chestInches,
+      lengthInches:
+        incomingVar?.lengthInches ||
+        existingVar?.lengthInches ||
+        DEFAULT_SIZE_MEASUREMENTS[size].lengthInches
+    };
+  });
+
+  const imageUrls =
+    input.imageUrls !== undefined
+      ? validateImageUrls(input.imageUrls)
+      : existingProduct?.imageUrls || [];
+
+  return {
+    id,
+    slug,
+    name,
+    team,
+    countryOrLeague:
+      String(
+        input.countryOrLeague ?? existingProduct?.countryOrLeague ?? 'International / Club'
+      )
+        .trim()
+        .slice(0, 80) || 'International / Club',
+    category,
+    kitType,
+    editionTier,
+    gender,
+    season: String(input.season ?? existingProduct?.season ?? '2025/26').trim().slice(0, 20),
+    priceBdt: roundedPriceBdt,
+    salePriceBdt: roundedSalePriceBdt,
+    customPrintPriceBdt: Math.round(customPrintPriceBdt),
+    description,
+    fabricSpec:
+      String(
+        input.fabricSpec ??
+          existingProduct?.fabricSpec ??
+          '165 GSM AeroMesh 100% Breathable Polyester · Embroidered Crest'
+      )
+        .trim()
+        .slice(0, 200),
+    fitNote:
+      String(
+        input.fitNote ??
+          existingProduct?.fitNote ??
+          'Standard Bangladesh stadium fit. True to chest sizing chart.'
+      )
+        .trim()
+        .slice(0, 200),
+    careInstructions:
+      String(
+        input.careInstructions ??
+          existingProduct?.careInstructions ??
+          'Machine wash cold inside-out. Do not iron directly over print.'
+      )
+        .trim()
+        .slice(0, 200),
+    isActive: input.isActive !== undefined ? Boolean(input.isActive) : (existingProduct?.isActive ?? true),
+    isDemo: existingProduct ? existingProduct.isDemo : Boolean(input.isDemo ?? false),
+    featuredRank: Number.isFinite(Number(input.featuredRank))
+      ? Number(input.featuredRank)
+      : (existingProduct?.featuredRank ?? 99),
+    createdAt: existingProduct?.createdAt ?? nowIso,
+    updatedAt: nowIso,
+    variants,
+    visual,
+    imageUrls
+  };
+}
+
+function validateCouponInput(input: CouponDefinition): CouponDefinition {
+  const code = String(input.code ?? '')
+    .trim()
+    .toUpperCase();
+  if (!/^[A-Z0-9_-]{3,20}$/.test(code)) {
+    throw new StoreError(
+      400,
+      'Coupon code must be 3–20 uppercase alphanumeric characters (e.g., EID200).'
+    );
+  }
+  const description = String(input.description ?? '').trim();
+  if (description.length < 4 || description.length > 160) {
+    throw new StoreError(400, 'Coupon description must be between 4 and 160 characters.');
+  }
+  const discountType = input.discountType;
+  if (discountType !== 'PERCENTAGE' && discountType !== 'FIXED_BDT') {
+    throw new StoreError(400, 'Discount type must be PERCENTAGE or FIXED_BDT.');
+  }
+  const value = Number(input.value);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new StoreError(400, 'Discount value must be greater than 0.');
+  }
+  if (discountType === 'PERCENTAGE' && (value < 1 || value > 90)) {
+    throw new StoreError(400, 'Percentage discount must be between 1% and 90%.');
+  }
+  if (discountType === 'FIXED_BDT' && (value < 10 || value > 10000)) {
+    throw new StoreError(400, 'Fixed BDT discount must be between ৳10 and ৳10,000.');
+  }
+  const minSubtotalBdt = Number(input.minSubtotalBdt ?? 0);
+  if (!Number.isFinite(minSubtotalBdt) || minSubtotalBdt < 0 || minSubtotalBdt > 100000) {
+    throw new StoreError(400, 'Minimum subtotal must be between ৳0 and ৳100,000.');
+  }
+  let maxDiscountBdt: number | undefined = undefined;
+  if (
+    input.maxDiscountBdt !== undefined &&
+    input.maxDiscountBdt !== null &&
+    String(input.maxDiscountBdt).trim() !== ''
+  ) {
+    const maxVal = Number(input.maxDiscountBdt);
+    if (!Number.isFinite(maxVal) || maxVal < 10 || maxVal > 25000) {
+      throw new StoreError(400, 'Maximum discount cap must be between ৳10 and ৳25,000.');
+    }
+    maxDiscountBdt = Math.round(maxVal);
+  }
+
+  return {
+    code,
+    description,
+    discountType,
+    value: Math.round(value),
+    minSubtotalBdt: Math.round(minSubtotalBdt),
+    ...(maxDiscountBdt !== undefined ? { maxDiscountBdt } : {}),
+    isActive: input.isActive !== undefined ? Boolean(input.isActive) : true
+  };
+}
+
+function applySiteSettingsPatch(
+  current: SiteSettingsConfig,
+  patch: SiteSettingsPatch
+): SiteSettingsConfig {
+  const nextSettings = structuredClone(current);
+
+  if (typeof patch.announcementText === 'string') {
+    const cleanText = patch.announcementText.trim();
+    if (cleanText.length < 5 || cleanText.length > 240) {
+      throw new StoreError(400, 'Announcement text must be between 5 and 240 characters.');
+    }
+    nextSettings.announcementText = cleanText;
+  }
+  if (typeof patch.insideDhakaShippingBdt === 'number') {
+    if (
+      !Number.isFinite(patch.insideDhakaShippingBdt) ||
+      patch.insideDhakaShippingBdt < 0 ||
+      patch.insideDhakaShippingBdt > 1000
+    ) {
+      throw new StoreError(400, 'Inside Dhaka shipping rate must be between ৳0 and ৳1,000.');
+    }
+    nextSettings.insideDhakaShippingBdt = Math.round(patch.insideDhakaShippingBdt);
+  }
+  if (typeof patch.outsideDhakaShippingBdt === 'number') {
+    if (
+      !Number.isFinite(patch.outsideDhakaShippingBdt) ||
+      patch.outsideDhakaShippingBdt < 0 ||
+      patch.outsideDhakaShippingBdt > 2000
+    ) {
+      throw new StoreError(400, 'Outside Dhaka shipping rate must be between ৳0 and ৳2,000.');
+    }
+    nextSettings.outsideDhakaShippingBdt = Math.round(patch.outsideDhakaShippingBdt);
+  }
+  if (typeof patch.freeShippingThresholdBdt === 'number') {
+    if (
+      !Number.isFinite(patch.freeShippingThresholdBdt) ||
+      patch.freeShippingThresholdBdt < 0 ||
+      patch.freeShippingThresholdBdt > 50000
+    ) {
+      throw new StoreError(400, 'Free shipping threshold must be between ৳0 and ৳50,000.');
+    }
+    nextSettings.freeShippingThresholdBdt = Math.round(patch.freeShippingThresholdBdt);
+  }
+  if (typeof patch.returnWindowDays === 'number') {
+    if (
+      !Number.isFinite(patch.returnWindowDays) ||
+      patch.returnWindowDays < 1 ||
+      patch.returnWindowDays > 90
+    ) {
+      throw new StoreError(400, 'Return window must be between 1 and 90 days.');
+    }
+    nextSettings.returnWindowDays = Math.round(patch.returnWindowDays);
+  }
+  if (typeof patch.supportPhone === 'string') {
+    const cleanPhone = patch.supportPhone.trim();
+    if (cleanPhone.length < 6 || cleanPhone.length > 30) {
+      throw new StoreError(400, 'Support phone must be between 6 and 30 characters.');
+    }
+    nextSettings.supportPhone = cleanPhone;
+  }
+  if (typeof patch.supportEmail === 'string') {
+    const cleanEmail = patch.supportEmail.trim();
+    if (cleanEmail.length < 5 || cleanEmail.length > 120 || !cleanEmail.includes('@')) {
+      throw new StoreError(400, 'Please provide a valid support email address.');
+    }
+    nextSettings.supportEmail = cleanEmail;
+  }
+  if (typeof patch.storeAddress === 'string') {
+    const cleanAddr = patch.storeAddress.trim();
+    if (cleanAddr.length < 5 || cleanAddr.length > 200) {
+      throw new StoreError(400, 'Store address must be between 5 and 200 characters.');
+    }
+    nextSettings.storeAddress = cleanAddr;
+  }
+
+  nextSettings.updatedAt = new Date().toISOString();
+  return withEnvGatewayFlags(nextSettings);
+}
+
+function buildCustomerDirectoryFromOrders(
+  orders: StoredOrder[],
+  registeredProfiles: Array<{
+    uid: string;
+    displayName?: string;
+    email?: string;
+    phone?: string;
+    division?: string;
+    district?: string;
+    upazila?: string;
+    streetAddress?: string;
+  }> = []
+): CustomerDirectoryRecord[] {
+  const map = new Map<string, CustomerDirectoryRecord>();
+
+  for (const prof of registeredProfiles) {
+    if (!prof.uid) continue;
+    const key = `uid:${prof.uid}`;
+    map.set(key, {
+      customerKey: key,
+      uid: prof.uid,
+      name: prof.displayName || 'Registered Supporter',
+      email: prof.email || '',
+      phone: prof.phone || '',
+      division: prof.division || 'Dhaka',
+      district: prof.district || 'Dhaka',
+      upazila: prof.upazila || '',
+      streetAddress: prof.streetAddress || '',
+      isRegisteredUser: true,
+      totalOrders: 0,
+      totalSpentBdt: 0,
+      lastOrderAt: null,
+      orders: []
+    });
+  }
+
+  const realOrders = orders
+    .filter((o) => !o.isDemoOrder)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  for (const ord of realOrders) {
+    const key = ord.userId ? `uid:${ord.userId}` : `phone:${ord.customerPhone}`;
+    const { orderAccessToken: _t, idempotencyKey: _i, ...safeOrder } = structuredClone(ord);
+    let entry = map.get(key);
+    if (!entry) {
+      entry = {
+        customerKey: key,
+        uid: ord.userId || null,
+        name: ord.customerName,
+        email: ord.customerEmail || '',
+        phone: ord.customerPhone,
+        division: ord.division,
+        district: ord.district,
+        upazila: ord.upazila,
+        streetAddress: ord.streetAddress,
+        isRegisteredUser: Boolean(ord.userId),
+        totalOrders: 0,
+        totalSpentBdt: 0,
+        lastOrderAt: null,
+        orders: []
+      };
+      map.set(key, entry);
+    } else {
+      if (!entry.phone && ord.customerPhone) entry.phone = ord.customerPhone;
+      if (!entry.email && ord.customerEmail) entry.email = ord.customerEmail;
+      if (!entry.streetAddress && ord.streetAddress) {
+        entry.division = ord.division;
+        entry.district = ord.district;
+        entry.upazila = ord.upazila;
+        entry.streetAddress = ord.streetAddress;
+      }
+    }
+
+    entry.totalOrders += 1;
+    if (ord.orderStatus !== 'CANCELLED') {
+      entry.totalSpentBdt += ord.totalBdt;
+    }
+    if (!entry.lastOrderAt || ord.createdAt > entry.lastOrderAt) {
+      entry.lastOrderAt = ord.createdAt;
+    }
+    entry.orders.push(safeOrder);
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.lastOrderAt && b.lastOrderAt) return b.lastOrderAt.localeCompare(a.lastOrderAt);
+    if (a.lastOrderAt) return -1;
+    if (b.lastOrderAt) return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 /**
  * Concurrency-safe transactional store with an async mutex lock and optional JSON file persistence.
- * Guarantees that concurrent requests within a Node process execute stock checks, deductions,
- * and idempotency registration strictly one at a time with full rollback on error.
  */
 export class TransactionalStoreAdapter implements PersistenceAdapter {
   public readonly backendType = 'transactional-store' as const;
@@ -230,6 +833,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
   private settings: SiteSettingsConfig;
   private orders: Map<string, StoredOrder>;
   private idempotencyIndex: Map<string, string>;
+  private stockLogs: StockAdjustmentLog[];
   private mutexQueue: Promise<void> = Promise.resolve();
   private readonly snapshotFilePath?: string;
 
@@ -242,6 +846,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
     this.idempotencyIndex = new Map([
       [DEMO_SEED_ORDER.idempotencyKey, DEMO_SEED_ORDER.orderNumber]
     ]);
+    this.stockLogs = [];
 
     if (this.snapshotFilePath) {
       this.loadSnapshotFromDisk();
@@ -254,11 +859,16 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
       const raw = fs.readFileSync(this.snapshotFilePath, 'utf-8');
       const parsed = JSON.parse(raw) as {
         catalog?: Product[];
+        coupons?: CouponDefinition[];
         settings?: SiteSettingsConfig;
         orders?: StoredOrder[];
+        stockLogs?: StockAdjustmentLog[];
       };
       if (Array.isArray(parsed.catalog) && parsed.catalog.length > 0) {
         this.catalog = parsed.catalog;
+      }
+      if (Array.isArray(parsed.coupons) && parsed.coupons.length > 0) {
+        this.coupons = parsed.coupons;
       }
       if (parsed.settings) {
         this.settings = withEnvGatewayFlags(parsed.settings);
@@ -271,6 +881,9 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
           this.idempotencyIndex.set(ord.idempotencyKey, ord.orderNumber.toUpperCase());
         }
       }
+      if (Array.isArray(parsed.stockLogs)) {
+        this.stockLogs = parsed.stockLogs;
+      }
     } catch {
       // Keep default seeded state if snapshot is unreadable
     }
@@ -281,8 +894,10 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
     try {
       const payload = {
         catalog: this.catalog,
+        coupons: this.coupons,
         settings: this.settings,
-        orders: Array.from(this.orders.values())
+        orders: Array.from(this.orders.values()),
+        stockLogs: this.stockLogs
       };
       fs.writeFileSync(this.snapshotFilePath, JSON.stringify(payload, null, 2), 'utf-8');
     } catch {
@@ -299,12 +914,14 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
     return resultPromise;
   }
 
-  async getCatalogAndSettings() {
+  async getCatalogAndSettings(options?: { includeAllCoupons?: boolean }) {
     this.loadSnapshotFromDisk();
     this.settings = withEnvGatewayFlags(this.settings);
     return {
       products: structuredClone(this.catalog),
-      coupons: structuredClone(this.coupons.filter((c) => c.isActive)),
+      coupons: structuredClone(
+        options?.includeAllCoupons ? this.coupons : this.coupons.filter((c) => c.isActive)
+      ),
       settings: structuredClone(this.settings)
     };
   }
@@ -341,7 +958,6 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
       this.loadSnapshotFromDisk();
       this.settings = withEnvGatewayFlags(this.settings);
 
-      // 1. Atomic Idempotency Check inside Mutex Transaction
       const existingOrderNum = this.idempotencyIndex.get(input.idempotencyKey);
       if (existingOrderNum) {
         const existingOrder = this.orders.get(existingOrderNum);
@@ -353,7 +969,6 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         }
       }
 
-      // 2. Payment gateway guard
       if (input.paymentMethod === 'BKASH' && !this.settings.bkashMerchantEnabled) {
         throw new StoreError(
           400,
@@ -367,7 +982,6 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         );
       }
 
-      // 3. Authoritative server-side price, coupon & shipping calculation against current locked stock
       const calculation = calculateOrderTotals({
         items: input.items,
         catalog: this.catalog,
@@ -382,14 +996,14 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         const isStockError =
           calculation.error?.includes('Only ') ||
           calculation.error?.includes('out of stock') ||
-          calculation.error?.includes('Stock changed');
+          calculation.error?.includes('Stock changed') ||
+          calculation.error?.includes('Insufficient stock');
         throw new StoreError(
           isStockError ? 409 : 400,
           calculation.error ?? 'Order calculation failed.'
         );
       }
 
-      // 4. Verify and deduct variant stock atomically on a working copy before committing
       const nextCatalog = structuredClone(this.catalog);
       const nowIso = new Date().toISOString();
 
@@ -406,7 +1020,6 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         product.updatedAt = nowIso;
       }
 
-      // 5. Generate unique non-sequential order number
       let randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
       while (this.orders.has(`JV-2610-${randomSuffix}`)) {
         randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -459,7 +1072,6 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         ]
       };
 
-      // Commit transaction
       this.catalog = nextCatalog;
       this.orders.set(orderNumber, newOrder);
       this.idempotencyIndex.set(input.idempotencyKey, orderNumber);
@@ -507,8 +1119,22 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
           const product = nextCatalog.find((p) => p.id === item.productId);
           const variant = product?.variants.find((v) => v.size === item.size);
           if (product && variant) {
+            const prevStock = variant.stock;
             variant.stock += item.quantity;
             product.updatedAt = nowIso;
+            this.stockLogs.unshift({
+              id: `stk-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+              productId: product.id,
+              productName: product.name,
+              size: variant.size,
+              previousStock: prevStock,
+              newStock: variant.stock,
+              delta: item.quantity,
+              reason: `Stock restored from cancelled order ${existing.orderNumber}`,
+              actorUid: actorRole,
+              actorEmail: actorRole,
+              timestamp: nowIso
+            });
           }
         }
       }
@@ -525,7 +1151,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
             timestamp: nowIso,
             note:
               note ||
-              'Order cancelled by verified customer prior to dispatch confirmation. Stock restored.'
+              'Order cancelled prior to dispatch confirmation. Reserved stock restored to inventory.'
           }
         ]
       };
@@ -571,8 +1197,22 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
           const product = nextCatalog.find((p) => p.id === item.productId);
           const variant = product?.variants.find((v) => v.size === item.size);
           if (product && variant) {
+            const prevStock = variant.stock;
             variant.stock += item.quantity;
             product.updatedAt = nowIso;
+            this.stockLogs.unshift({
+              id: `stk-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+              productId: product.id,
+              productName: product.name,
+              size: variant.size,
+              previousStock: prevStock,
+              newStock: variant.stock,
+              delta: item.quantity,
+              reason: `Stock restored on admin cancellation of ${existing.orderNumber}`,
+              actorUid: 'admin',
+              actorEmail: 'admin',
+              timestamp: nowIso
+            });
           }
         }
       }
@@ -608,6 +1248,9 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
     size: JerseySize;
     stock?: number;
     priceBdt?: number;
+    reason?: string;
+    actorUid?: string;
+    actorEmail?: string;
   }): Promise<Product> {
     return this.runExclusive(async () => {
       this.loadSnapshotFromDisk();
@@ -621,6 +1264,9 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
       if (!variant) {
         throw new StoreError(404, `Variant size ${params.size} not found.`);
       }
+
+      const previousStock = variant.stock;
+      const nowIso = new Date().toISOString();
 
       if (typeof params.stock !== 'undefined') {
         if (
@@ -647,71 +1293,140 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         product.priceBdt = Math.round(params.priceBdt);
       }
 
-      product.updatedAt = new Date().toISOString();
+      if (variant.stock !== previousStock) {
+        this.stockLogs.unshift({
+          id: `stk-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+          productId: product.id,
+          productName: product.name,
+          size: variant.size,
+          previousStock,
+          newStock: variant.stock,
+          delta: variant.stock - previousStock,
+          reason: (params.reason || 'Manual admin inventory adjustment').trim().slice(0, 160),
+          actorUid: params.actorUid || 'admin',
+          actorEmail: params.actorEmail || 'admin',
+          timestamp: nowIso
+        });
+      }
+
+      product.updatedAt = nowIso;
       this.catalog = nextCatalog;
       this.persistSnapshotToDisk();
       return structuredClone(product);
     });
   }
 
-  async updateSiteSettingsAtomic(
-    patch: Partial<
-      Pick<
-        SiteSettingsConfig,
-        | 'announcementText'
-        | 'insideDhakaShippingBdt'
-        | 'outsideDhakaShippingBdt'
-        | 'freeShippingThresholdBdt'
-      >
-    >
-  ): Promise<SiteSettingsConfig> {
+  async createProductAtomic(input: UpsertProductInput): Promise<Product> {
     return this.runExclusive(async () => {
       this.loadSnapshotFromDisk();
-      const nextSettings = structuredClone(this.settings);
+      const newProduct = validateAndBuildProduct(input);
+      if (this.catalog.some((p) => p.id === newProduct.id || p.slug === newProduct.slug)) {
+        throw new StoreError(
+          409,
+          `A product with ID "${newProduct.id}" or slug "${newProduct.slug}" already exists.`
+        );
+      }
+      this.catalog.push(newProduct);
+      this.persistSnapshotToDisk();
+      return structuredClone(newProduct);
+    });
+  }
 
-      if (typeof patch.announcementText === 'string') {
-        const cleanText = patch.announcementText.trim();
-        if (cleanText.length < 5 || cleanText.length > 240) {
-          throw new StoreError(400, 'Announcement text must be between 5 and 240 characters.');
-        }
-        nextSettings.announcementText = cleanText;
+  async updateProductAtomic(
+    productId: string,
+    input: Partial<UpsertProductInput>
+  ): Promise<Product> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const index = this.catalog.findIndex((p) => p.id === productId);
+      if (index === -1) {
+        throw new StoreError(404, `Product "${productId}" not found.`);
       }
-      if (typeof patch.insideDhakaShippingBdt === 'number') {
-        if (
-          !Number.isFinite(patch.insideDhakaShippingBdt) ||
-          patch.insideDhakaShippingBdt < 0 ||
-          patch.insideDhakaShippingBdt > 1000
-        ) {
-          throw new StoreError(400, 'Inside Dhaka shipping rate must be between ৳0 and ৳1,000.');
-        }
-        nextSettings.insideDhakaShippingBdt = Math.round(patch.insideDhakaShippingBdt);
-      }
-      if (typeof patch.outsideDhakaShippingBdt === 'number') {
-        if (
-          !Number.isFinite(patch.outsideDhakaShippingBdt) ||
-          patch.outsideDhakaShippingBdt < 0 ||
-          patch.outsideDhakaShippingBdt > 2000
-        ) {
-          throw new StoreError(400, 'Outside Dhaka shipping rate must be between ৳0 and ৳2,000.');
-        }
-        nextSettings.outsideDhakaShippingBdt = Math.round(patch.outsideDhakaShippingBdt);
-      }
-      if (typeof patch.freeShippingThresholdBdt === 'number') {
-        if (
-          !Number.isFinite(patch.freeShippingThresholdBdt) ||
-          patch.freeShippingThresholdBdt < 0 ||
-          patch.freeShippingThresholdBdt > 50000
-        ) {
-          throw new StoreError(
-            400,
-            'Free shipping threshold must be between ৳0 and ৳50,000.'
-          );
-        }
-        nextSettings.freeShippingThresholdBdt = Math.round(patch.freeShippingThresholdBdt);
+      const existing = this.catalog[index]!;
+      const updated = validateAndBuildProduct(
+        {
+          ...existing,
+          ...input,
+          name: input.name ?? existing.name,
+          team: input.team ?? existing.team,
+          category: input.category ?? existing.category,
+          kitType: input.kitType ?? existing.kitType,
+          editionTier: input.editionTier ?? existing.editionTier,
+          priceBdt: input.priceBdt ?? existing.priceBdt,
+          description: input.description ?? existing.description,
+          visual: { ...existing.visual, ...(input.visual || {}) }
+        },
+        existing
+      );
+
+      if (
+        this.catalog.some((p, idx) => idx !== index && p.slug === updated.slug)
+      ) {
+        throw new StoreError(409, `Another product already uses the slug "${updated.slug}".`);
       }
 
-      nextSettings.updatedAt = new Date().toISOString();
-      this.settings = withEnvGatewayFlags(nextSettings);
+      this.catalog[index] = updated;
+      this.persistSnapshotToDisk();
+      return structuredClone(updated);
+    });
+  }
+
+  async setProductArchiveStateAtomic(productId: string, isActive: boolean): Promise<Product> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const product = this.catalog.find((p) => p.id === productId);
+      if (!product) {
+        throw new StoreError(404, `Product "${productId}" not found.`);
+      }
+      product.isActive = Boolean(isActive);
+      product.updatedAt = new Date().toISOString();
+      this.persistSnapshotToDisk();
+      return structuredClone(product);
+    });
+  }
+
+  async listStockAdjustmentLogs(limit = 50): Promise<StockAdjustmentLog[]> {
+    this.loadSnapshotFromDisk();
+    return structuredClone(this.stockLogs.slice(0, limit));
+  }
+
+  async upsertCouponAtomic(couponInput: CouponDefinition): Promise<CouponDefinition> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const validated = validateCouponInput(couponInput);
+      const existingIdx = this.coupons.findIndex((c) => c.code === validated.code);
+      if (existingIdx >= 0) {
+        this.coupons[existingIdx] = validated;
+      } else {
+        this.coupons.push(validated);
+      }
+      this.persistSnapshotToDisk();
+      return structuredClone(validated);
+    });
+  }
+
+  async deleteCouponAtomic(code: string): Promise<void> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const cleanCode = String(code ?? '').trim().toUpperCase();
+      const existingIdx = this.coupons.findIndex((c) => c.code === cleanCode);
+      if (existingIdx === -1) {
+        throw new StoreError(404, `Coupon "${cleanCode}" not found.`);
+      }
+      this.coupons.splice(existingIdx, 1);
+      this.persistSnapshotToDisk();
+    });
+  }
+
+  async listCustomerDirectory(): Promise<CustomerDirectoryRecord[]> {
+    this.loadSnapshotFromDisk();
+    return buildCustomerDirectoryFromOrders(Array.from(this.orders.values()));
+  }
+
+  async updateSiteSettingsAtomic(patch: SiteSettingsPatch): Promise<SiteSettingsConfig> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      this.settings = applySiteSettingsPatch(this.settings, patch);
       this.persistSnapshotToDisk();
       return structuredClone(this.settings);
     });
@@ -720,20 +1435,12 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
 
 /**
  * Cloud Firestore Admin SDK Persistence Adapter for production Vercel Serverless deployments.
- * Uses Firestore multi-document transactions (`db.runTransaction`) to atomically:
- * - Verify idempotency in `/serverIdempotency/{idempotencyKey}`
- * - Read and deduct size-specific variant stock in `/serverCatalog/{productId}`
- * - Persist guest and customer orders in `/serverOrders/{orderNumber}`
- * - Persist storefront shipping & announcement settings in `/siteSettings/global`
- *
- * Because `/serverOrders`, `/serverCatalog`, and `/serverIdempotency` are accessed exclusively
- * via the server-side Firebase Admin SDK, client SDKs are completely blocked by `firestore.rules`
- * default-deny (`allow read, write: if false`).
+ * Uses Firestore multi-document transactions (`db.runTransaction`) to atomically persist
+ * orders, idempotency locks, catalog products, variant inventory, stock logs, coupons, and settings.
  */
 export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
   public readonly backendType = 'firestore-admin' as const;
   private readonly db: Firestore;
-  private readonly coupons: CouponDefinition[] = structuredClone(INITIAL_COUPONS);
   private seededPromise: Promise<void> | null = null;
 
   constructor(db: Firestore) {
@@ -756,6 +1463,9 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
           for (const prod of INITIAL_CATALOG) {
             batch.set(this.db.collection('serverCatalog').doc(prod.id), structuredClone(prod));
           }
+          for (const coup of INITIAL_COUPONS) {
+            batch.set(this.db.collection('serverCoupons').doc(coup.code), structuredClone(coup));
+          }
           batch.set(
             this.db.collection('serverOrders').doc(DEMO_SEED_ORDER.orderNumber),
             structuredClone(DEMO_SEED_ORDER)
@@ -775,14 +1485,15 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
     return this.seededPromise;
   }
 
-  async getCatalogAndSettings(): Promise<{
+  async getCatalogAndSettings(options?: { includeAllCoupons?: boolean }): Promise<{
     products: Product[];
     coupons: CouponDefinition[];
     settings: SiteSettingsConfig;
   }> {
     await this.ensureSeeded();
-    const [catalogSnap, settingsSnap] = await Promise.all([
+    const [catalogSnap, couponsSnap, settingsSnap] = await Promise.all([
       this.db.collection('serverCatalog').get(),
+      this.db.collection('serverCoupons').get(),
       this.db.collection('siteSettings').doc('global').get()
     ]);
 
@@ -790,13 +1501,20 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
       .map((d) => d.data() as Product)
       .sort((a, b) => a.featuredRank - b.featuredRank);
 
+    const storedCoupons: CouponDefinition[] =
+      couponsSnap && !couponsSnap.empty
+        ? couponsSnap.docs.map((d) => d.data() as CouponDefinition)
+        : structuredClone(INITIAL_COUPONS);
+
     const rawSettings = settingsSnap.exists
       ? (settingsSnap.data() as SiteSettingsConfig)
       : structuredClone(INITIAL_SITE_SETTINGS);
 
     return {
       products: products.length > 0 ? products : structuredClone(INITIAL_CATALOG),
-      coupons: structuredClone(this.coupons.filter((c) => c.isActive)),
+      coupons: options?.includeAllCoupons
+        ? storedCoupons
+        : storedCoupons.filter((c) => c.isActive),
       settings: withEnvGatewayFlags(rawSettings)
     };
   }
@@ -837,8 +1555,13 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
   ): Promise<{ order: StoredOrder; duplicatePrevented: boolean }> {
     await this.ensureSeeded();
 
+    const couponsSnap = await this.db.collection('serverCoupons').get();
+    const activeCoupons: CouponDefinition[] =
+      couponsSnap && !couponsSnap.empty
+        ? couponsSnap.docs.map((d) => d.data() as CouponDefinition)
+        : structuredClone(INITIAL_COUPONS);
+
     return this.db.runTransaction(async (tx: Transaction) => {
-      // 1. Check idempotency key inside Firestore transaction
       const idemRef = this.db.collection('serverIdempotency').doc(input.idempotencyKey);
       const idemSnap = await tx.get(idemRef);
       if (idemSnap.exists) {
@@ -855,7 +1578,6 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         }
       }
 
-      // 2. Read site settings inside transaction
       const settingsRef = this.db.collection('siteSettings').doc('global');
       const settingsSnap = await tx.get(settingsRef);
       const settings = withEnvGatewayFlags(
@@ -877,7 +1599,6 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         );
       }
 
-      // 3. Read all referenced product documents inside the Firestore transaction
       const uniqueProductIds = Array.from(
         new Set((input.items || []).map((i) => String(i.productId || '')))
       ).filter(Boolean);
@@ -897,11 +1618,10 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         }
       }
 
-      // 4. Calculate totals & verify variant stock against transactionally locked products
       const calculation = calculateOrderTotals({
         items: input.items,
         catalog: lockedCatalog,
-        coupons: this.coupons,
+        coupons: activeCoupons,
         settings,
         couponCode: input.couponCode,
         division: input.division,
@@ -912,7 +1632,8 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         const isStockError =
           calculation.error?.includes('Only ') ||
           calculation.error?.includes('out of stock') ||
-          calculation.error?.includes('Stock changed');
+          calculation.error?.includes('Stock changed') ||
+          calculation.error?.includes('Insufficient stock');
         throw new StoreError(
           isStockError ? 409 : 400,
           calculation.error ?? 'Order calculation failed.'
@@ -933,7 +1654,6 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         product.updatedAt = nowIso;
       }
 
-      // 5. Generate unique non-sequential order number and verify no collision in transaction
       let randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
       let orderNumber = `JV-2610-${randomSuffix}`;
       let orderRef = this.db.collection('serverOrders').doc(orderNumber);
@@ -992,7 +1712,6 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         ]
       };
 
-      // 6. Write updated products, new order, and idempotency lock atomically
       for (const updatedProd of lockedCatalog) {
         tx.set(this.db.collection('serverCatalog').doc(updatedProd.id), updatedProd);
       }
@@ -1054,7 +1773,22 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
           for (const item of existing.items.filter((i) => i.productId === prod.id)) {
             const variant = prod.variants.find((v) => v.size === item.size);
             if (variant) {
+              const prevStock = variant.stock;
               variant.stock += item.quantity;
+              const logId = `stk-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+              tx.set(this.db.collection('serverStockLogs').doc(logId), {
+                id: logId,
+                productId: prod.id,
+                productName: prod.name,
+                size: variant.size,
+                previousStock: prevStock,
+                newStock: variant.stock,
+                delta: item.quantity,
+                reason: `Stock restored from cancelled order ${existing.orderNumber}`,
+                actorUid: actorRole,
+                actorEmail: actorRole,
+                timestamp: nowIso
+              });
             }
           }
           prod.updatedAt = nowIso;
@@ -1074,7 +1808,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
             timestamp: nowIso,
             note:
               note ||
-              'Order cancelled by verified customer prior to dispatch confirmation. Stock restored.'
+              'Order cancelled prior to dispatch confirmation. Reserved stock restored to inventory.'
           }
         ]
       };
@@ -1125,7 +1859,22 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
           for (const item of existing.items.filter((i) => i.productId === prod.id)) {
             const variant = prod.variants.find((v) => v.size === item.size);
             if (variant) {
+              const prevStock = variant.stock;
               variant.stock += item.quantity;
+              const logId = `stk-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+              tx.set(this.db.collection('serverStockLogs').doc(logId), {
+                id: logId,
+                productId: prod.id,
+                productName: prod.name,
+                size: variant.size,
+                previousStock: prevStock,
+                newStock: variant.stock,
+                delta: item.quantity,
+                reason: `Stock restored on admin cancellation of ${existing.orderNumber}`,
+                actorUid: 'admin',
+                actorEmail: 'admin',
+                timestamp: nowIso
+              });
             }
           }
           prod.updatedAt = nowIso;
@@ -1162,6 +1911,9 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
     size: JerseySize;
     stock?: number;
     priceBdt?: number;
+    reason?: string;
+    actorUid?: string;
+    actorEmail?: string;
   }): Promise<Product> {
     await this.ensureSeeded();
     return this.db.runTransaction(async (tx: Transaction) => {
@@ -1176,6 +1928,9 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
       if (!variant) {
         throw new StoreError(404, `Variant size ${params.size} not found.`);
       }
+
+      const previousStock = variant.stock;
+      const nowIso = new Date().toISOString();
 
       if (typeof params.stock !== 'undefined') {
         if (
@@ -1202,74 +1957,166 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         product.priceBdt = Math.round(params.priceBdt);
       }
 
-      product.updatedAt = new Date().toISOString();
+      if (variant.stock !== previousStock) {
+        const logId = `stk-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+        const logEntry: StockAdjustmentLog = {
+          id: logId,
+          productId: product.id,
+          productName: product.name,
+          size: variant.size,
+          previousStock,
+          newStock: variant.stock,
+          delta: variant.stock - previousStock,
+          reason: (params.reason || 'Manual admin inventory adjustment').trim().slice(0, 160),
+          actorUid: params.actorUid || 'admin',
+          actorEmail: params.actorEmail || 'admin',
+          timestamp: nowIso
+        };
+        tx.set(this.db.collection('serverStockLogs').doc(logId), logEntry);
+      }
+
+      product.updatedAt = nowIso;
       tx.set(prodRef, product);
       return product;
     });
   }
 
-  async updateSiteSettingsAtomic(
-    patch: Partial<
-      Pick<
-        SiteSettingsConfig,
-        | 'announcementText'
-        | 'insideDhakaShippingBdt'
-        | 'outsideDhakaShippingBdt'
-        | 'freeShippingThresholdBdt'
-      >
-    >
-  ): Promise<SiteSettingsConfig> {
+  async createProductAtomic(input: UpsertProductInput): Promise<Product> {
+    await this.ensureSeeded();
+    const newProduct = validateAndBuildProduct(input);
+    const catalogSnap = await this.db.collection('serverCatalog').get();
+    const existingProducts = catalogSnap.docs.map((d) => d.data() as Product);
+    if (existingProducts.some((p) => p.id === newProduct.id || p.slug === newProduct.slug)) {
+      throw new StoreError(
+        409,
+        `A product with ID "${newProduct.id}" or slug "${newProduct.slug}" already exists.`
+      );
+    }
+
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const prodRef = this.db.collection('serverCatalog').doc(newProduct.id);
+      const snap = await tx.get(prodRef);
+      if (snap.exists) {
+        throw new StoreError(409, `Product "${newProduct.id}" already exists.`);
+      }
+      tx.set(prodRef, newProduct);
+      return newProduct;
+    });
+  }
+
+  async updateProductAtomic(
+    productId: string,
+    input: Partial<UpsertProductInput>
+  ): Promise<Product> {
+    await this.ensureSeeded();
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const prodRef = this.db.collection('serverCatalog').doc(productId);
+      const snap = await tx.get(prodRef);
+      if (!snap.exists) {
+        throw new StoreError(404, `Product "${productId}" not found.`);
+      }
+      const existing = snap.data() as Product;
+      const updated = validateAndBuildProduct(
+        {
+          ...existing,
+          ...input,
+          name: input.name ?? existing.name,
+          team: input.team ?? existing.team,
+          category: input.category ?? existing.category,
+          kitType: input.kitType ?? existing.kitType,
+          editionTier: input.editionTier ?? existing.editionTier,
+          priceBdt: input.priceBdt ?? existing.priceBdt,
+          description: input.description ?? existing.description,
+          visual: { ...existing.visual, ...(input.visual || {}) }
+        },
+        existing
+      );
+      tx.set(prodRef, updated);
+      return updated;
+    });
+  }
+
+  async setProductArchiveStateAtomic(productId: string, isActive: boolean): Promise<Product> {
+    await this.ensureSeeded();
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const prodRef = this.db.collection('serverCatalog').doc(productId);
+      const snap = await tx.get(prodRef);
+      if (!snap.exists) {
+        throw new StoreError(404, `Product "${productId}" not found.`);
+      }
+      const existing = structuredClone(snap.data() as Product);
+      existing.isActive = Boolean(isActive);
+      existing.updatedAt = new Date().toISOString();
+      tx.set(prodRef, existing);
+      return existing;
+    });
+  }
+
+  async listStockAdjustmentLogs(limit = 50): Promise<StockAdjustmentLog[]> {
+    await this.ensureSeeded();
+    const snap = await this.db.collection('serverStockLogs').get();
+    return snap.docs
+      .map((d) => d.data() as StockAdjustmentLog)
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      .slice(0, limit);
+  }
+
+  async upsertCouponAtomic(couponInput: CouponDefinition): Promise<CouponDefinition> {
+    await this.ensureSeeded();
+    const validated = validateCouponInput(couponInput);
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const coupRef = this.db.collection('serverCoupons').doc(validated.code);
+      tx.set(coupRef, validated);
+      return validated;
+    });
+  }
+
+  async deleteCouponAtomic(code: string): Promise<void> {
+    await this.ensureSeeded();
+    const cleanCode = String(code ?? '').trim().toUpperCase();
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const coupRef = this.db.collection('serverCoupons').doc(cleanCode);
+      const snap = await tx.get(coupRef);
+      if (!snap.exists) {
+        throw new StoreError(404, `Coupon "${cleanCode}" not found.`);
+      }
+      const deactivated: CouponDefinition = {
+        ...(snap.data() as CouponDefinition),
+        isActive: false
+      };
+      tx.set(coupRef, deactivated);
+    });
+  }
+
+  async listCustomerDirectory(): Promise<CustomerDirectoryRecord[]> {
+    await this.ensureSeeded();
+    const [ordersSnap, usersSnap] = await Promise.all([
+      this.db.collection('serverOrders').get(),
+      this.db.collection('users').get()
+    ]);
+
+    const orders = ordersSnap.docs.map((d) => d.data() as StoredOrder);
+    const profiles = usersSnap.docs.map((d) => {
+      const data = d.data() as Record<string, unknown>;
+      return {
+        uid: String(data.uid || d.id),
+        displayName: typeof data.displayName === 'string' ? data.displayName : undefined
+      };
+    });
+
+    return buildCustomerDirectoryFromOrders(orders, profiles);
+  }
+
+  async updateSiteSettingsAtomic(patch: SiteSettingsPatch): Promise<SiteSettingsConfig> {
     await this.ensureSeeded();
     return this.db.runTransaction(async (tx: Transaction) => {
       const settingsRef = this.db.collection('siteSettings').doc('global');
       const settingsSnap = await tx.get(settingsRef);
-      const nextSettings = settingsSnap.exists
+      const currentSettings = settingsSnap.exists
         ? structuredClone(settingsSnap.data() as SiteSettingsConfig)
         : structuredClone(INITIAL_SITE_SETTINGS);
 
-      if (typeof patch.announcementText === 'string') {
-        const cleanText = patch.announcementText.trim();
-        if (cleanText.length < 5 || cleanText.length > 240) {
-          throw new StoreError(400, 'Announcement text must be between 5 and 240 characters.');
-        }
-        nextSettings.announcementText = cleanText;
-      }
-      if (typeof patch.insideDhakaShippingBdt === 'number') {
-        if (
-          !Number.isFinite(patch.insideDhakaShippingBdt) ||
-          patch.insideDhakaShippingBdt < 0 ||
-          patch.insideDhakaShippingBdt > 1000
-        ) {
-          throw new StoreError(400, 'Inside Dhaka shipping rate must be between ৳0 and ৳1,000.');
-        }
-        nextSettings.insideDhakaShippingBdt = Math.round(patch.insideDhakaShippingBdt);
-      }
-      if (typeof patch.outsideDhakaShippingBdt === 'number') {
-        if (
-          !Number.isFinite(patch.outsideDhakaShippingBdt) ||
-          patch.outsideDhakaShippingBdt < 0 ||
-          patch.outsideDhakaShippingBdt > 2000
-        ) {
-          throw new StoreError(400, 'Outside Dhaka shipping rate must be between ৳0 and ৳2,000.');
-        }
-        nextSettings.outsideDhakaShippingBdt = Math.round(patch.outsideDhakaShippingBdt);
-      }
-      if (typeof patch.freeShippingThresholdBdt === 'number') {
-        if (
-          !Number.isFinite(patch.freeShippingThresholdBdt) ||
-          patch.freeShippingThresholdBdt < 0 ||
-          patch.freeShippingThresholdBdt > 50000
-        ) {
-          throw new StoreError(
-            400,
-            'Free shipping threshold must be between ৳0 and ৳50,000.'
-          );
-        }
-        nextSettings.freeShippingThresholdBdt = Math.round(patch.freeShippingThresholdBdt);
-      }
-
-      nextSettings.updatedAt = new Date().toISOString();
-      const finalSettings = withEnvGatewayFlags(nextSettings);
+      const finalSettings = applySiteSettingsPatch(currentSettings, patch);
       tx.set(settingsRef, finalSettings);
       return finalSettings;
     });
@@ -1352,13 +2199,6 @@ export function getFirebaseAdminFirestoreIfConfigured(): Firestore | null {
 
 let defaultStoreInstance: PersistenceAdapter | null = null;
 
-/**
- * Creates or returns the active server persistence adapter:
- * - Uses `FirestoreAdminPersistenceAdapter` on Vercel / production when Firebase Admin
- *   service-account credentials are set.
- * - Falls back to `TransactionalStoreAdapter` in local development / automated tests
- *   when service-account credentials are not present.
- */
 export function getDefaultPersistenceAdapter(): PersistenceAdapter {
   if (!defaultStoreInstance) {
     const adminDb = getFirebaseAdminFirestoreIfConfigured();
