@@ -1,0 +1,6 @@
+{
+  "name": "Jersey Valley — Football Jerseys Bangladesh",
+  "description": "Shop replica and fan football jerseys in Bangladesh with custom name & number printing, BDT pricing, and nationwide Cash on Delivery.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
