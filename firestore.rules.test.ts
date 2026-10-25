@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Server } from 'node:http';
+import http, { type Server } from 'node:http';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
-import { createJerseyValleyApp } from './server.ts';
+import { createJerseyValleyApp } from './server';
+import vercelHandler from './api/index';
 
 const rulesPath = path.resolve(process.cwd(), 'firestore.rules');
 const blueprintPath = path.resolve(process.cwd(), 'firebase-blueprint.json');
@@ -275,3 +276,42 @@ test('Backend API Security Suite: Admin endpoints reject unauthenticated mutatio
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('Vercel Serverless Function Entrypoint (/api/index.ts): Serves API and SEO routes identically to Express server', async () => {
+  const server: Server = await new Promise((resolve) => {
+    const s = http.createServer((req, res) => {
+      void vercelHandler(req, res);
+    });
+    s.listen(0, '127.0.0.1', () => resolve(s));
+  });
+
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const catalogRes = await fetch(`${baseUrl}/api/catalog`);
+    assert.equal(catalogRes.status, 200);
+    const catalogData = await catalogRes.json();
+    assert.ok(Array.isArray(catalogData.products) && catalogData.products.length === 10);
+
+    const authMeRes = await fetch(`${baseUrl}/api/auth/me`);
+    assert.equal(authMeRes.status, 200);
+    const authMeData = await authMeRes.json();
+    assert.equal(authMeData.authenticated, false);
+    assert.equal(authMeData.isAdmin, false);
+
+    const robotsRes = await fetch(`${baseUrl}/robots.txt`);
+    assert.equal(robotsRes.status, 200);
+    const robotsText = await robotsRes.text();
+    assert.ok(robotsText.includes('Disallow: /admin'));
+
+    const sitemapRes = await fetch(`${baseUrl}/sitemap.xml`);
+    assert.equal(sitemapRes.status, 200);
+    const sitemapXml = await sitemapRes.text();
+    assert.ok(sitemapXml.includes('<urlset'));
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+

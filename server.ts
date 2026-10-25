@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer as createViteServer } from 'vite';
 import {
   BANGLADESH_DIVISIONS,
   calculateOrderTotals,
@@ -16,17 +15,17 @@ import {
   type PaymentStatus,
   type OrderStatus,
   type JerseySize
-} from './src/lib/commerce.ts';
+} from './src/lib/commerce';
 import {
   INITIAL_CATALOG,
   INITIAL_COUPONS,
   INITIAL_SITE_SETTINGS
-} from './src/data/catalog.ts';
+} from './src/data/catalog';
 import {
   extractVerifiedUser,
   checkIsServerAdmin,
   requireAdminMiddleware
-} from './src/lib/serverAuth.ts';
+} from './src/lib/serverAuth';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,10 +68,31 @@ export interface StoredOrder {
   }[];
 }
 
+function isBkashConfiguredFromEnv(): boolean {
+  return Boolean(
+    process.env.BKASH_APP_KEY &&
+      process.env.BKASH_APP_SECRET &&
+      process.env.BKASH_USERNAME &&
+      process.env.BKASH_PASSWORD
+  );
+}
+
+function isNagadConfiguredFromEnv(): boolean {
+  return Boolean(
+    process.env.NAGAD_MERCHANT_ID &&
+      process.env.NAGAD_PG_PUBLIC_KEY &&
+      process.env.NAGAD_MERCHANT_PRIVATE_KEY
+  );
+}
+
 // Authoritative server-side state initialized with demonstration catalog and 1 explicitly labeled demo order
 const catalogStore: Product[] = structuredClone(INITIAL_CATALOG);
 const couponsStore: CouponDefinition[] = structuredClone(INITIAL_COUPONS);
-let siteSettingsStore: SiteSettingsConfig = structuredClone(INITIAL_SITE_SETTINGS);
+const siteSettingsStore: SiteSettingsConfig = {
+  ...structuredClone(INITIAL_SITE_SETTINGS),
+  bkashMerchantEnabled: isBkashConfiguredFromEnv(),
+  nagadMerchantEnabled: isNagadConfiguredFromEnv()
+};
 
 const inFlightIdempotencyKeys = new Set<string>();
 
@@ -147,9 +167,31 @@ function sanitizeOrderForClient(order: StoredOrder): Omit<StoredOrder, 'orderAcc
   return safeOrder;
 }
 
+function resolvePublicBaseUrl(req: express.Request): string {
+  if (process.env.APP_URL && process.env.APP_URL !== 'MY_APP_URL') {
+    return process.env.APP_URL.replace(/\/+$/, '');
+  }
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const proto =
+    typeof forwardedProto === 'string'
+      ? forwardedProto.split(',')[0].trim()
+      : req.protocol || 'https';
+  return `${proto}://${req.get('host')}`;
+}
+
 export async function createJerseyValleyApp() {
   const app = express();
   app.use(express.json({ limit: '256kb' }));
+
+  // Refresh gateway flags from environment variables on app creation
+  siteSettingsStore.bkashMerchantEnabled = isBkashConfiguredFromEnv();
+  siteSettingsStore.nagadMerchantEnabled = isNagadConfiguredFromEnv();
 
   // 0. Server-Validated Session & Admin RBAC Verification Endpoint
   app.get('/api/auth/me', async (req, res) => {
@@ -718,14 +760,14 @@ export async function createJerseyValleyApp() {
 
   // 6. SEO Endpoints: robots.txt and sitemap.xml
   app.get('/robots.txt', (req, res) => {
-    const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    const baseUrl = resolvePublicBaseUrl(req);
     res.type('text/plain').send(
       `User-agent: *\nAllow: /\nDisallow: /admin\nSitemap: ${baseUrl}/sitemap.xml\n`
     );
   });
 
   app.get('/sitemap.xml', (req, res) => {
-    const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    const baseUrl = resolvePublicBaseUrl(req);
     const productUrls = catalogStore
       .filter((p) => p.isActive)
       .map(
@@ -763,6 +805,7 @@ async function startServer() {
   const app = await createJerseyValleyApp();
 
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
@@ -782,7 +825,7 @@ async function startServer() {
   });
 }
 
-// Only start listening if server.ts is executed directly (allows importing createJerseyValleyApp in tests)
+// Only start listening if server.ts is executed directly (allows importing createJerseyValleyApp in Vercel /api/index.ts and tests)
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   startServer();
 }

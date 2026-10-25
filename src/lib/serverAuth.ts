@@ -1,6 +1,39 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import type { Request, Response, NextFunction } from 'express';
-import firebaseConfig from '../../firebase-applet-config.json';
+
+interface FirebaseAppletConfig {
+  projectId: string;
+  firestoreDatabaseId?: string;
+}
+
+function loadFirebaseServerConfig(): FirebaseAppletConfig {
+  let fileConfig: Partial<FirebaseAppletConfig> = {};
+  try {
+    const raw = fs.readFileSync(
+      new URL('../../firebase-applet-config.json', import.meta.url),
+      'utf-8'
+    );
+    fileConfig = JSON.parse(raw) as Partial<FirebaseAppletConfig>;
+  } catch {
+    // Fallback to environment variables if file is unavailable
+  }
+
+  return {
+    projectId:
+      process.env.FIREBASE_PROJECT_ID ||
+      process.env.VITE_FIREBASE_PROJECT_ID ||
+      fileConfig.projectId ||
+      '',
+    firestoreDatabaseId:
+      process.env.FIREBASE_FIRESTORE_DATABASE_ID ||
+      process.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
+      fileConfig.firestoreDatabaseId ||
+      '(default)'
+  };
+}
+
+const serverFirebaseConfig = loadFirebaseServerConfig();
 
 export interface VerifiedFirebaseUser {
   uid: string;
@@ -61,7 +94,7 @@ export async function verifyFirebaseIdToken(
     nowSeconds?: number;
   }
 ): Promise<VerifiedFirebaseUser> {
-  const projectId = options?.expectedProjectId || firebaseConfig.projectId;
+  const projectId = options?.expectedProjectId || serverFirebaseConfig.projectId;
   if (!projectId) {
     throw new Error('Firebase projectId is not configured on the server.');
   }
@@ -176,11 +209,11 @@ export async function checkIsServerAdmin(
   }
 
   // Check Firestore /admins/{uid} document using the user's verified ID token
-  if (rawIdToken && firebaseConfig.projectId && firebaseConfig.firestoreDatabaseId) {
+  if (rawIdToken && serverFirebaseConfig.projectId && serverFirebaseConfig.firestoreDatabaseId) {
     try {
-      const dbId = encodeURIComponent(firebaseConfig.firestoreDatabaseId);
+      const dbId = encodeURIComponent(serverFirebaseConfig.firestoreDatabaseId);
       const uid = encodeURIComponent(user.uid);
-      const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${dbId}/documents/admins/${uid}`;
+      const url = `https://firestore.googleapis.com/v1/projects/${serverFirebaseConfig.projectId}/databases/${dbId}/documents/admins/${uid}`;
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${rawIdToken}`

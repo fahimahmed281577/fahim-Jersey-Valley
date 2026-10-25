@@ -29,6 +29,7 @@ export const CheckoutPage: React.FC = () => {
     coupons,
     settings,
     currentUser,
+    getAuthHeaders,
     savedAddress,
     saveCustomerAddress,
     clearCart,

@@ -3,8 +3,29 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const clientEnv =
+  (import.meta as { env?: Record<string, string | undefined> }).env ?? {};
+
+export const resolvedFirebaseConfig = {
+  projectId: clientEnv.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+  appId: clientEnv.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+  apiKey: clientEnv.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
+  authDomain: clientEnv.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
+  firestoreDatabaseId:
+    clientEnv.VITE_FIREBASE_FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId,
+  storageBucket: clientEnv.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+  messagingSenderId:
+    clientEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
+  measurementId:
+    clientEnv.VITE_FIREBASE_MEASUREMENT_ID || firebaseConfig.measurementId || '',
+  oAuthClientId:
+    clientEnv.VITE_FIREBASE_OAUTH_CLIENT_ID || firebaseConfig.oAuthClientId || '',
+  recaptchaSiteKey:
+    clientEnv.VITE_FIREBASE_RECAPTCHA_SITE_KEY || firebaseConfig.recaptchaSiteKey || ''
+};
+
+const app = initializeApp(resolvedFirebaseConfig);
+export const db = getFirestore(app, resolvedFirebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
