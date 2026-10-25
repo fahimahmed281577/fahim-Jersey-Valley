@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import React, { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { motion, useReducedMotion } from 'motion/react';
 import { StoreProvider } from './context/StoreContext';
 import { Layout } from './components/Layout';
 import { HomePage } from './pages/HomePage';
@@ -16,24 +17,47 @@ import { WishlistPage } from './pages/WishlistPage';
 import { AccountPage } from './pages/AccountPage';
 import { AdminDashboardPage } from './pages/AdminDashboardPage';
 
+const AnimatedRoutes: React.FC = () => {
+  const location = useLocation();
+  const shouldReduceMotion = useReducedMotion();
+
+  useEffect(() => {
+    if (!location.hash) {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+    }
+  }, [location.pathname, location.hash]);
+
+  return (
+    <motion.div
+      key={location.pathname}
+      initial={shouldReduceMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <Routes location={location}>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/shop" element={<CatalogPage />} />
+        <Route path="/product/:slug" element={<ProductDetailPage />} />
+        <Route path="/checkout" element={<CheckoutPage />} />
+        <Route path="/track" element={<OrderTrackingPage />} />
+        <Route path="/orders/:orderNumber" element={<OrderTrackingPage />} />
+        <Route path="/wishlist" element={<WishlistPage />} />
+        <Route path="/account" element={<AccountPage />} />
+        <Route path="/admin" element={<AdminDashboardPage />} />
+      </Routes>
+    </motion.div>
+  );
+};
+
 export default function App() {
   return (
     <BrowserRouter>
       <StoreProvider>
         <Layout>
-          <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/shop" element={<CatalogPage />} />
-            <Route path="/product/:slug" element={<ProductDetailPage />} />
-            <Route path="/checkout" element={<CheckoutPage />} />
-            <Route path="/track" element={<OrderTrackingPage />} />
-            <Route path="/orders/:orderNumber" element={<OrderTrackingPage />} />
-            <Route path="/wishlist" element={<WishlistPage />} />
-            <Route path="/account" element={<AccountPage />} />
-            <Route path="/admin" element={<AdminDashboardPage />} />
-          </Routes>
+          <AnimatedRoutes />
         </Layout>
       </StoreProvider>
     </BrowserRouter>
   );
 }
+

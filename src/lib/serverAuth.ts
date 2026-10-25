@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import bcrypt from 'bcryptjs';
 import type { Request, Response, NextFunction } from 'express';
 import { getFirebaseAdminFirestoreIfConfigured } from './persistentStore';
 
@@ -279,6 +280,380 @@ export async function extractVerifiedUser(
   }
 }
 
+export const STANDALONE_ADMIN_COOKIE_NAME = 'jv_admin_session';
+export const STANDALONE_SESSION_TTL_SECONDS = 8 * 60 * 60; // 8 hours
+
+// Dummy bcrypt hash (cost 10) used solely to equalize timing when loginId does not match
+const TIMING_GUARD_BCRYPT_HASH =
+  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+
+export interface StandaloneAdminEnvConfig {
+  loginId: string;
+  passwordHash: string;
+  sessionSecret: string;
+}
+
+export interface StandaloneAdminConfigStatus {
+  configured: boolean;
+  missingVars: string[];
+  reason?: string;
+}
+
+export interface StandaloneAdminSessionPayload {
+  sub: string;
+  mode: 'standalone_admin';
+  jti: string;
+  csrf: string;
+  iat: number;
+  exp: number;
+}
+
+// Server-side revocation set & active session store (prevents replay after logout)
+const revokedStandaloneSessionIds = new Set<string>();
+const activeStandaloneSessions = new Map<string, StandaloneAdminSessionPayload>();
+
+export function getStandaloneAdminConfigStatus(
+  env: NodeJS.ProcessEnv = process.env
+): StandaloneAdminConfigStatus {
+  const loginId = (env.ADMIN_LOGIN_ID || '').trim();
+  const passwordHash = (env.ADMIN_PASSWORD_HASH || '').trim();
+  const sessionSecret = (env.ADMIN_SESSION_SECRET || '').trim();
+
+  const missingVars: string[] = [];
+  if (!loginId) missingVars.push('ADMIN_LOGIN_ID');
+  if (!passwordHash) missingVars.push('ADMIN_PASSWORD_HASH');
+  if (!sessionSecret) missingVars.push('ADMIN_SESSION_SECRET');
+
+  if (missingVars.length > 0) {
+    return {
+      configured: false,
+      missingVars,
+      reason: `Missing required server environment variables: ${missingVars.join(', ')}. Configure them in .env (local) or Vercel Environment Variables.`
+    };
+  }
+
+  if (!/^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(passwordHash)) {
+    return {
+      configured: false,
+      missingVars: ['ADMIN_PASSWORD_HASH'],
+      reason: 'ADMIN_PASSWORD_HASH must be a valid bcrypt hash (60 characters starting with $2a$, $2b$, or $2y$).'
+    };
+  }
+
+  if (sessionSecret.length < 32) {
+    return {
+      configured: false,
+      missingVars: ['ADMIN_SESSION_SECRET'],
+      reason: 'ADMIN_SESSION_SECRET must be at least 32 characters long for cryptographic session security.'
+    };
+  }
+
+  return {
+    configured: true,
+    missingVars: []
+  };
+}
+
+function timingSafeStringMatch(a: string, b: string): boolean {
+  const hashA = crypto.createHash('sha256').update(a, 'utf8').digest();
+  const hashB = crypto.createHash('sha256').update(b, 'utf8').digest();
+  return crypto.timingSafeEqual(hashA, hashB) && a.length === b.length;
+}
+
+/**
+ * Verifies standalone admin login credentials against server-only environment variables
+ * using timing-safe ID matching and bcrypt password verification.
+ */
+export async function verifyStandaloneAdminCredentials(
+  inputLoginId: string,
+  inputPassword: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<{
+  ok: boolean;
+  statusCode: number;
+  adminId?: string;
+  error?: string;
+}> {
+  const configStatus = getStandaloneAdminConfigStatus(env);
+  if (!configStatus.configured) {
+    return {
+      ok: false,
+      statusCode: 503,
+      error:
+        configStatus.reason ||
+        'Standalone administrator login is not configured on the server.'
+    };
+  }
+
+  const trimmedId = String(inputLoginId ?? '').trim();
+  const rawPassword = String(inputPassword ?? '');
+
+  if (!trimmedId || !rawPassword || rawPassword.length > 256) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'Please enter both your Admin ID and password.'
+    };
+  }
+
+  const configuredId = (env.ADMIN_LOGIN_ID || '').trim();
+  const configuredHash = (env.ADMIN_PASSWORD_HASH || '').trim();
+
+  const idMatches = timingSafeStringMatch(trimmedId, configuredId);
+  const hashToCompare = idMatches ? configuredHash : TIMING_GUARD_BCRYPT_HASH;
+  const passwordMatches = await bcrypt.compare(rawPassword, hashToCompare);
+
+  if (!idMatches || !passwordMatches) {
+    return {
+      ok: false,
+      statusCode: 401,
+      error: 'Invalid Admin ID or password.'
+    };
+  }
+
+  return {
+    ok: true,
+    statusCode: 200,
+    adminId: configuredId
+  };
+}
+
+function signStandalonePayload(
+  encodedPayload: string,
+  sessionSecret: string
+): string {
+  return crypto
+    .createHmac('sha256', sessionSecret)
+    .update(encodedPayload, 'utf8')
+    .digest('base64url');
+}
+
+/**
+ * Creates a signed server-side standalone administrator session token and records it.
+ */
+export function createStandaloneAdminSession(
+  adminId: string,
+  options?: {
+    env?: NodeJS.ProcessEnv;
+    nowSeconds?: number;
+    ttlSeconds?: number;
+  }
+): {
+  token: string;
+  payload: StandaloneAdminSessionPayload;
+} {
+  const env = options?.env ?? process.env;
+  const configStatus = getStandaloneAdminConfigStatus(env);
+  if (!configStatus.configured) {
+    throw new Error(configStatus.reason || 'Standalone admin session secret is not configured.');
+  }
+
+  const nowSec = options?.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const ttlSec = options?.ttlSeconds ?? STANDALONE_SESSION_TTL_SECONDS;
+  const jti = crypto.randomBytes(18).toString('base64url');
+  const csrf = crypto.randomBytes(24).toString('base64url');
+
+  const payload: StandaloneAdminSessionPayload = {
+    sub: adminId,
+    mode: 'standalone_admin',
+    jti,
+    csrf,
+    iat: nowSec,
+    exp: nowSec + ttlSec
+  };
+
+  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = signStandalonePayload(encodedPayload, (env.ADMIN_SESSION_SECRET || '').trim());
+  const token = `${encodedPayload}.${signature}`;
+
+  activeStandaloneSessions.set(jti, payload);
+  return { token, payload };
+}
+
+/**
+ * Verifies a standalone admin session token's HMAC signature, expiration, and revocation state.
+ */
+export function verifyStandaloneAdminSessionToken(
+  rawToken: string,
+  options?: {
+    env?: NodeJS.ProcessEnv;
+    nowSeconds?: number;
+  }
+): StandaloneAdminSessionPayload | null {
+  const env = options?.env ?? process.env;
+  const configStatus = getStandaloneAdminConfigStatus(env);
+  if (!configStatus.configured) {
+    return null;
+  }
+
+  const parts = String(rawToken ?? '').trim().split('.');
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const [encodedPayload, providedSig] = parts;
+  if (!encodedPayload || !providedSig) {
+    return null;
+  }
+
+  const expectedSig = signStandalonePayload(encodedPayload, (env.ADMIN_SESSION_SECRET || '').trim());
+  const sigBufA = Buffer.from(providedSig, 'utf8');
+  const sigBufB = Buffer.from(expectedSig, 'utf8');
+  if (sigBufA.length !== sigBufB.length || !crypto.timingSafeEqual(sigBufA, sigBufB)) {
+    return null;
+  }
+
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(encodedPayload, 'base64url').toString('utf8')
+    ) as StandaloneAdminSessionPayload;
+
+    if (
+      !decoded ||
+      decoded.mode !== 'standalone_admin' ||
+      typeof decoded.sub !== 'string' ||
+      typeof decoded.jti !== 'string' ||
+      typeof decoded.csrf !== 'string' ||
+      typeof decoded.exp !== 'number'
+    ) {
+      return null;
+    }
+
+    const configuredId = (env.ADMIN_LOGIN_ID || '').trim();
+    if (!timingSafeStringMatch(decoded.sub, configuredId)) {
+      return null;
+    }
+
+    const nowSec = options?.nowSeconds ?? Math.floor(Date.now() / 1000);
+    if (decoded.exp <= nowSec) {
+      activeStandaloneSessions.delete(decoded.jti);
+      return null;
+    }
+
+    if (revokedStandaloneSessionIds.has(decoded.jti)) {
+      return null;
+    }
+
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+export function parseCookiesHeader(cookieHeader: string | undefined): Record<string, string> {
+  if (!cookieHeader) return {};
+  const result: Record<string, string> = {};
+  for (const pair of cookieHeader.split(';')) {
+    const idx = pair.indexOf('=');
+    if (idx <= 0) continue;
+    const key = pair.slice(0, idx).trim();
+    const val = pair.slice(idx + 1).trim();
+    try {
+      result[key] = decodeURIComponent(val);
+    } catch {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+export function extractStandaloneAdminSession(
+  req: Request,
+  env: NodeJS.ProcessEnv = process.env
+): {
+  session: StandaloneAdminSessionPayload | null;
+  rawToken: string | null;
+} {
+  const cookies = parseCookiesHeader(req.headers.cookie);
+  const rawToken = cookies[STANDALONE_ADMIN_COOKIE_NAME] || null;
+  if (!rawToken) {
+    return { session: null, rawToken: null };
+  }
+
+  const session = verifyStandaloneAdminSessionToken(rawToken, { env });
+  return { session, rawToken };
+}
+
+/**
+ * Invalidates a standalone admin session token on the server so it cannot be reused after logout.
+ */
+export function revokeStandaloneAdminSession(
+  rawToken: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  if (!rawToken) return;
+  const session = verifyStandaloneAdminSessionToken(rawToken, { env });
+  if (session?.jti) {
+    revokedStandaloneSessionIds.add(session.jti);
+    activeStandaloneSessions.delete(session.jti);
+  }
+}
+
+export function serializeStandaloneSessionCookie(
+  token: string,
+  isProduction = process.env.NODE_ENV === 'production'
+): string {
+  const parts = [
+    `${STANDALONE_ADMIN_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${STANDALONE_SESSION_TTL_SECONDS}`
+  ];
+  if (isProduction) {
+    parts.push('Secure');
+  }
+  return parts.join('; ');
+}
+
+export function serializeClearStandaloneSessionCookie(
+  isProduction = process.env.NODE_ENV === 'production'
+): string {
+  const parts = [
+    `${STANDALONE_ADMIN_COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+  ];
+  if (isProduction) {
+    parts.push('Secure');
+  }
+  return parts.join('; ');
+}
+
+/**
+ * Validates CSRF protection for state-changing cookie-authenticated requests.
+ * Requires either a matching X-CSRF-Token header or X-Requested-With: XMLHttpRequest.
+ */
+export function verifyStandaloneCsrfRequest(
+  req: Request,
+  session: StandaloneAdminSessionPayload
+): boolean {
+  const method = (req.method || 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+    return true;
+  }
+
+  const csrfHeader = String(req.headers['x-csrf-token'] ?? '').trim();
+  if (csrfHeader && timingSafeStringMatch(csrfHeader, session.csrf)) {
+    return true;
+  }
+
+  const requestedWith = String(req.headers['x-requested-with'] ?? '').trim();
+  if (requestedWith.toLowerCase() === 'xmlhttprequest') {
+    return true;
+  }
+
+  return false;
+}
+
+export interface AuthenticatedAdminActor extends VerifiedFirebaseUser {
+  authMode?: 'standalone' | 'firebase';
+  adminId?: string;
+}
+
 export function createRequireAdminMiddleware(
   verifyFn: TokenVerifierFn = verifyFirebaseIdToken
 ) {
@@ -287,12 +662,43 @@ export function createRequireAdminMiddleware(
     res: Response,
     next: NextFunction
   ): Promise<void> {
+    // 1. Check for a valid server-side Standalone Admin Session Cookie first
+    const { session: standaloneSession } = extractStandaloneAdminSession(req);
+    if (standaloneSession) {
+      if (!verifyStandaloneCsrfRequest(req, standaloneSession)) {
+        res.status(403).json({
+          error:
+            'CSRF validation failed. Include the X-CSRF-Token or X-Requested-With header on state-changing admin requests.'
+        });
+        return;
+      }
+
+      const standaloneActor: AuthenticatedAdminActor = {
+        uid: `standalone:${standaloneSession.sub}`,
+        email: `${standaloneSession.sub} (Standalone Admin)`,
+        emailVerified: true,
+        isAdminClaim: true,
+        rawClaims: {
+          mode: 'standalone_admin',
+          jti: standaloneSession.jti
+        },
+        authMode: 'standalone',
+        adminId: standaloneSession.sub
+      };
+
+      (req as Request & { verifiedAdminUser?: AuthenticatedAdminActor }).verifiedAdminUser =
+        standaloneActor;
+      next();
+      return;
+    }
+
+    // 2. Fallback to Firebase Bearer Token verification (when Authorization header is present)
     const { user, rawToken, error } = await extractVerifiedUser(req, verifyFn);
     if (!user) {
       res.status(401).json({
         error:
           error ||
-          'Authentication required. Provide a valid Firebase ID token in the Authorization Bearer header.'
+          'Administrator authentication required. Sign in with your Standalone Admin ID or a verified Firebase Administrator account.'
       });
       return;
     }
@@ -314,13 +720,21 @@ export function createRequireAdminMiddleware(
       return;
     }
 
-    (req as Request & { verifiedAdminUser?: VerifiedFirebaseUser }).verifiedAdminUser = user;
+    const firebaseActor: AuthenticatedAdminActor = {
+      ...user,
+      authMode: 'firebase'
+    };
+
+    (req as Request & { verifiedAdminUser?: AuthenticatedAdminActor }).verifiedAdminUser =
+      firebaseActor;
     next();
   };
 }
 
 /**
- * Express middleware that strictly requires a verified administrator session.
+ * Express middleware that strictly requires a verified administrator session
+ * (either Standalone Admin Session Cookie or Firebase Admin Bearer Token).
  */
 export const requireAdminMiddleware = createRequireAdminMiddleware();
+
 

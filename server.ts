@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +16,14 @@ import {
   checkIsServerAdmin,
   createRequireAdminMiddleware,
   verifyFirebaseIdToken,
+  getStandaloneAdminConfigStatus,
+  verifyStandaloneAdminCredentials,
+  createStandaloneAdminSession,
+  extractStandaloneAdminSession,
+  revokeStandaloneAdminSession,
+  serializeStandaloneSessionCookie,
+  serializeClearStandaloneSessionCookie,
+  type AuthenticatedAdminActor,
   type TokenVerifierFn,
   type VerifiedFirebaseUser
 } from './src/lib/serverAuth';
@@ -58,6 +67,7 @@ function resolvePublicBaseUrl(req: express.Request): string {
 export interface JerseyValleyAppOptions {
   store?: PersistenceAdapter;
   rateLimitMaxRequests?: number;
+  loginRateLimitMaxRequests?: number;
   rateLimitWindowMs?: number;
   tokenVerifier?: TokenVerifierFn;
 }
@@ -65,6 +75,7 @@ export interface JerseyValleyAppOptions {
 export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   const store: PersistenceAdapter = options?.store ?? getDefaultPersistenceAdapter();
   const rateLimitMax = options?.rateLimitMaxRequests ?? 60;
+  const loginRateLimitMax = options?.loginRateLimitMaxRequests ?? 6;
   const rateLimitWindowMs = options?.rateLimitWindowMs ?? 60_000;
   const tokenVerifier: TokenVerifierFn = options?.tokenVerifier ?? verifyFirebaseIdToken;
   const requireAdmin = createRequireAdminMiddleware(tokenVerifier);
@@ -307,6 +318,11 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       }
     }
 
+    const { session: standaloneAdminSession } = extractStandaloneAdminSession(req);
+    if (standaloneAdminSession) {
+      return { authorized: true };
+    }
+
     const { user, rawToken } = await extractVerifiedUser(req, tokenVerifier);
     if (user) {
       if (order.userId && user.uid === order.userId) {
@@ -399,18 +415,121 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   );
 
   // ============================================================================
-  // 5. SECURE ADMIN PANEL APIs (Strictly Protected by Server-Side Admin RBAC)
-  // Every /api/admin/* route requires a valid Firebase ID token + verified email
-  // + UID in ADMIN_UIDS (or /admins/{uid} or admin custom claim).
+  // 5. SECURE ADMIN PANEL APIs (Strictly Protected by Server-Side Admin Auth)
+  // Supports:
+  //   (A) Temporary Standalone Admin Session Cookie (HttpOnly, signed, revocable)
+  //   (B) Firebase Admin Bearer Token (verified email + UID in ADMIN_UIDS / claims)
   // Unauthenticated -> 401 | Authenticated Non-Admin -> 403
   // ============================================================================
+
+  // 5a. Check Current Admin Session & Standalone Configuration Readiness
+  app.get('/api/admin/auth/session', rateLimitMiddleware('admin-session'), async (req, res) => {
+    const configStatus = getStandaloneAdminConfigStatus();
+    const { session: standaloneSession } = extractStandaloneAdminSession(req);
+    if (standaloneSession) {
+      return res.json({
+        authenticated: true,
+        authMode: 'standalone',
+        adminId: standaloneSession.sub,
+        csrfToken: standaloneSession.csrf,
+        expiresAt: new Date(standaloneSession.exp * 1000).toISOString(),
+        standaloneConfigured: configStatus.configured,
+        missingEnvVars: configStatus.missingVars,
+        persistenceBackend: store.backendType
+      });
+    }
+
+    const { user, rawToken } = await extractVerifiedUser(req, tokenVerifier);
+    if (user && user.emailVerified) {
+      const isAdmin = await checkIsServerAdmin(user, rawToken || undefined);
+      if (isAdmin) {
+        return res.json({
+          authenticated: true,
+          authMode: 'firebase',
+          adminId: user.email || user.uid,
+          uid: user.uid,
+          standaloneConfigured: configStatus.configured,
+          missingEnvVars: configStatus.missingVars,
+          persistenceBackend: store.backendType
+        });
+      }
+    }
+
+    return res.json({
+      authenticated: false,
+      authMode: null,
+      adminId: null,
+      standaloneConfigured: configStatus.configured,
+      missingEnvVars: configStatus.missingVars,
+      configNotice: configStatus.configured ? null : configStatus.reason || null,
+      persistenceBackend: store.backendType
+    });
+  });
+
+  // 5b. Standalone Administrator Login Endpoint (Rate-limited, Bcrypt-verified, HttpOnly Cookie)
+  app.post(
+    '/api/admin/auth/login',
+    rateLimitMiddleware('admin-login', loginRateLimitMax),
+    async (req, res) => {
+      const requestedWith = String(req.headers['x-requested-with'] ?? '').trim();
+      const contentType = String(req.headers['content-type'] ?? '').toLowerCase();
+      if (
+        requestedWith.toLowerCase() !== 'xmlhttprequest' &&
+        !contentType.includes('application/json')
+      ) {
+        return res.status(403).json({
+          error: 'CSRF check failed. Login requests must be sent as JSON with X-Requested-With.'
+        });
+      }
+
+      const { adminId, password } = req.body ?? {};
+      const verification = await verifyStandaloneAdminCredentials(
+        String(adminId ?? ''),
+        String(password ?? '')
+      );
+
+      if (!verification.ok || !verification.adminId) {
+        return res.status(verification.statusCode).json({
+          error: verification.error || 'Invalid Admin ID or password.'
+        });
+      }
+
+      const { token, payload } = createStandaloneAdminSession(verification.adminId);
+      res.setHeader('Set-Cookie', serializeStandaloneSessionCookie(token));
+      res.setHeader('Cache-Control', 'no-store');
+
+      return res.status(200).json({
+        authenticated: true,
+        authMode: 'standalone',
+        adminId: verification.adminId,
+        csrfToken: payload.csrf,
+        expiresAt: new Date(payload.exp * 1000).toISOString()
+      });
+    }
+  );
+
+  // 5c. Standalone Administrator Logout Endpoint (Invalidates server session & clears cookie)
+  app.post('/api/admin/auth/logout', rateLimitMiddleware('admin-logout'), (req, res) => {
+    const { rawToken } = extractStandaloneAdminSession(req);
+    revokeStandaloneAdminSession(rawToken);
+    res.setHeader('Set-Cookie', serializeClearStandaloneSessionCookie());
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      loggedOut: true,
+      authenticated: false
+    });
+  });
 
   app.get(
     '/api/admin/overview',
     rateLimitMiddleware('admin-read'),
     requireAdmin,
-    async (_req, res) => {
+    async (req, res) => {
       try {
+        const adminActor = (
+          req as express.Request & { verifiedAdminUser?: AuthenticatedAdminActor }
+        ).verifiedAdminUser;
+        const { session: standaloneSession } = extractStandaloneAdminSession(req);
         const [
           { products, coupons, settings },
           allOrders,
@@ -503,6 +622,12 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         return res.json({
           authorizedAdmin: true,
           persistenceBackend: store.backendType,
+          adminSession: {
+            authMode: adminActor?.authMode || 'standalone',
+            adminId: adminActor?.adminId || adminActor?.email || 'jvadmin',
+            uid: adminActor?.uid || 'standalone:jvadmin',
+            csrfToken: standaloneSession?.csrf || null
+          },
           metrics: {
             totalOrders: realOrders.length,
             pendingOrdersCount,

@@ -19,6 +19,9 @@ import {
   Upload,
   Trash2,
   Eye,
+  EyeOff,
+  LogOut,
+  KeyRound,
   X,
   Copy,
   Check,
@@ -189,6 +192,19 @@ export const AdminDashboardPage: React.FC = () => {
   );
   const [stockDrafts, setStockDrafts] = useState<Record<string, number>>({});
 
+  // Standalone Administrator Login & Session state
+  const [loginAdminId, setLoginAdminId] = useState<string>('jvadmin');
+  const [loginPassword, setLoginPassword] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [loggingIn, setLoggingIn] = useState<boolean>(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [standaloneConfigured, setStandaloneConfigured] = useState<boolean>(true);
+  const [missingEnvVars, setMissingEnvVars] = useState<string[]>([]);
+  const [configNotice, setConfigNotice] = useState<string | null>(null);
+  const [adminSessionMode, setAdminSessionMode] = useState<'standalone' | 'firebase'>('standalone');
+  const [adminActorId, setAdminActorId] = useState<string>('jvadmin');
+  const [csrfToken, setCsrfToken] = useState<string>('');
+
   // Coupon Management form state
   const [couponForm, setCouponForm] = useState<CouponDefinition>({
     code: '',
@@ -200,22 +216,64 @@ export const AdminDashboardPage: React.FC = () => {
     isActive: true
   });
 
+  const buildAdminHeaders = useCallback(
+    async (extraHeaders?: Record<string, string>): Promise<Record<string, string>> => {
+      const firebaseHeaders = await getAuthHeaders();
+      const headers: Record<string, string> = {
+        'X-Requested-With': 'XMLHttpRequest',
+        ...firebaseHeaders,
+        ...(extraHeaders || {})
+      };
+      if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken;
+      }
+      return headers;
+    },
+    [getAuthHeaders, csrfToken]
+  );
+
   const loadAdminOverview = useCallback(async () => {
     setLoading(true);
     setAuthErrorMessage(null);
     try {
-      const authHeaders = await getAuthHeaders();
-      if (!authHeaders.Authorization) {
-        setAuthStatusCode(401);
-        setAuthorizedAdmin(false);
-        setAuthErrorMessage(
-          'Authentication required. Provide a valid Firebase ID token in the Authorization Bearer header.'
-        );
-        return;
+      const firebaseHeaders = await getAuthHeaders();
+      const baseHeaders: Record<string, string> = {
+        'X-Requested-With': 'XMLHttpRequest',
+        ...firebaseHeaders
+      };
+
+      // 1. Check standalone session & server configuration status
+      try {
+        const sessionRes = await fetch('/api/admin/auth/session', {
+          credentials: 'include',
+          headers: baseHeaders
+        });
+        if (sessionRes.ok) {
+          const sessionData = await sessionRes.json();
+          setStandaloneConfigured(Boolean(sessionData.standaloneConfigured));
+          setMissingEnvVars(
+            Array.isArray(sessionData.missingEnvVars) ? sessionData.missingEnvVars : []
+          );
+          setConfigNotice(sessionData.configNotice || null);
+          if (sessionData.csrfToken) {
+            setCsrfToken(sessionData.csrfToken);
+            baseHeaders['X-CSRF-Token'] = sessionData.csrfToken;
+          }
+          if (sessionData.authMode) {
+            setAdminSessionMode(sessionData.authMode);
+          }
+          if (sessionData.adminId) {
+            setAdminActorId(sessionData.adminId);
+          }
+        }
+      } catch {
+        // Proceed to overview check
       }
 
+      // 2. Load protected Admin Overview (verifies either Standalone Cookie or Firebase Bearer Token)
       const res = await fetch('/api/admin/overview', {
-        headers: authHeaders
+        credentials: 'include',
+        headers: baseHeaders
       });
       setAuthStatusCode(res.status);
       const data = await res.json();
@@ -225,7 +283,7 @@ export const AdminDashboardPage: React.FC = () => {
         setAuthErrorMessage(
           data.error ||
             (res.status === 401
-              ? 'Authentication required. Sign in with your verified administrator account.'
+              ? 'Administrator authentication required. Sign in below with your Standalone Admin ID and password.'
               : 'Administrator privileges required.')
         );
         return;
@@ -233,6 +291,13 @@ export const AdminDashboardPage: React.FC = () => {
 
       setAuthorizedAdmin(Boolean(data.authorizedAdmin));
       setPersistenceBackend(data.persistenceBackend || 'transactional-store');
+      if (data.adminSession) {
+        setAdminSessionMode(data.adminSession.authMode || 'standalone');
+        setAdminActorId(data.adminSession.adminId || 'jvadmin');
+        if (data.adminSession.csrfToken) {
+          setCsrfToken(data.adminSession.csrfToken);
+        }
+      }
       setMetrics(data.metrics || null);
       setLowStockItems(data.lowStockItems || []);
       setRecentOrders(data.recentOrders || []);
@@ -261,6 +326,66 @@ export const AdminDashboardPage: React.FC = () => {
   useEffect(() => {
     loadAdminOverview();
   }, [loadAdminOverview, currentUser, isAdmin]);
+
+  const handleStandaloneLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+    setLoggingIn(true);
+    try {
+      const res = await fetch('/api/admin/auth/login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({
+          adminId: loginAdminId.trim(),
+          password: loginPassword
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data.error || 'Invalid Admin ID or password.');
+        return;
+      }
+
+      setLoginPassword('');
+      setShowPassword(false);
+      if (data.csrfToken) {
+        setCsrfToken(data.csrfToken);
+      }
+      setAdminSessionMode('standalone');
+      setAdminActorId(data.adminId || 'jvadmin');
+      pushToast(`Signed in as standalone administrator (${data.adminId || 'jvadmin'})`, 'success');
+      await loadAdminOverview();
+    } catch {
+      setLoginError('Network error while attempting administrator login.');
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handleStandaloneLogout = async () => {
+    try {
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
+      await fetch('/api/admin/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+        headers
+      });
+    } catch {
+      // Proceed to clear client session state
+    }
+    setAuthorizedAdmin(false);
+    setCsrfToken('');
+    setLoginPassword('');
+    setAuthStatusCode(401);
+    setAuthErrorMessage(null);
+    pushToast('Signed out of administrator session.', 'info');
+  };
 
   // Filtered & paginated products
   const filteredProducts = useMemo(() => {
@@ -422,7 +547,9 @@ export const AdminDashboardPage: React.FC = () => {
     e.preventDefault();
     setSavingProduct(true);
     try {
-      const authHeaders = await getAuthHeaders();
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
       const url = editingProductId
         ? `/api/admin/products/${encodeURIComponent(editingProductId)}`
         : '/api/admin/products';
@@ -430,10 +557,8 @@ export const AdminDashboardPage: React.FC = () => {
 
       const res = await fetch(url, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders
-        },
+        credentials: 'include',
+        headers,
         body: JSON.stringify(productDraft)
       });
       const data = await res.json();
@@ -460,14 +585,14 @@ export const AdminDashboardPage: React.FC = () => {
 
   const handleToggleProductArchive = async (prod: Product) => {
     try {
-      const authHeaders = await getAuthHeaders();
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
       const nextActive = !prod.isActive;
       const res = await fetch(`/api/admin/products/${encodeURIComponent(prod.id)}/archive`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders
-        },
+        credentials: 'include',
+        headers,
         body: JSON.stringify({ isActive: nextActive })
       });
       const data = await res.json();
@@ -495,13 +620,13 @@ export const AdminDashboardPage: React.FC = () => {
     note?: string
   ) => {
     try {
-      const authHeaders = await getAuthHeaders();
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
       const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderNumber)}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders
-        },
+        credentials: 'include',
+        headers,
         body: JSON.stringify({
           orderStatus: nextOrderStatus,
           paymentStatus: nextPaymentStatus,
@@ -532,13 +657,13 @@ export const AdminDashboardPage: React.FC = () => {
   ) => {
     if (nextStock < 0) return;
     try {
-      const authHeaders = await getAuthHeaders();
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
       const res = await fetch(`/api/admin/products/${encodeURIComponent(productId)}/stock`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders
-        },
+        credentials: 'include',
+        headers,
         body: JSON.stringify({
           size,
           stock: nextStock,
@@ -562,13 +687,13 @@ export const AdminDashboardPage: React.FC = () => {
     e.preventDefault();
     if (!settingsForm) return;
     try {
-      const authHeaders = await getAuthHeaders();
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
       const res = await fetch('/api/admin/settings', {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders
-        },
+        credentials: 'include',
+        headers,
         body: JSON.stringify(settingsForm)
       });
       const data = await res.json();
@@ -578,7 +703,7 @@ export const AdminDashboardPage: React.FC = () => {
       }
       await loadAdminOverview();
       await refreshCatalog();
-      pushToast('Saved Bangladesh shipping rates & store settings to Firestore', 'success');
+      pushToast('Saved Bangladesh shipping rates & store settings', 'success');
     } catch {
       pushToast('Could not save settings.', 'error');
     }
@@ -587,13 +712,13 @@ export const AdminDashboardPage: React.FC = () => {
   const handleSaveCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const authHeaders = await getAuthHeaders();
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
       const res = await fetch('/api/admin/coupons', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders
-        },
+        credentials: 'include',
+        headers,
         body: JSON.stringify(couponForm)
       });
       const data = await res.json();
@@ -620,10 +745,11 @@ export const AdminDashboardPage: React.FC = () => {
 
   const handleDeleteCoupon = async (code: string) => {
     try {
-      const authHeaders = await getAuthHeaders();
+      const headers = await buildAdminHeaders();
       const res = await fetch(`/api/admin/coupons/${encodeURIComponent(code)}`, {
         method: 'DELETE',
-        headers: authHeaders
+        credentials: 'include',
+        headers
       });
       const data = await res.json();
       if (!res.ok) {
@@ -639,108 +765,177 @@ export const AdminDashboardPage: React.FC = () => {
   };
 
   // ============================================================================
-  // UNAUTHENTICATED (401) OR NON-ADMIN (403) ACCESS GATE
+  // STANDALONE ADMIN LOGIN PAGE (SHOWN WHEN UNAUTHENTICATED OR NON-ADMIN)
   // ============================================================================
   if (!loading && !authorizedAdmin) {
     return (
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-14 space-y-6">
-        <div className="bg-white border border-zinc-300 p-6 sm:p-8 space-y-5">
+      <div className="max-w-xl mx-auto px-4 sm:px-6 py-12 space-y-6">
+        <div className="bg-white border border-zinc-300 p-6 sm:p-8 space-y-6">
           <div className="flex items-start justify-between gap-4 border-b border-zinc-200 pb-4">
             <div>
-              <span className="text-xs font-mono-num uppercase text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5">
-                HTTP {authStatusCode || 401} · SERVER-SIDE ADMIN RBAC ENFORCED
+              <span className="inline-block text-[11px] font-mono-num uppercase text-[#15803D] bg-emerald-50 border border-emerald-200 px-2.5 py-0.5">
+                TEMPORARY STANDALONE ADMIN AUTHENTICATION · LOCAL &amp; PREVIEW
               </span>
               <h1 className="font-display text-3xl font-bold uppercase text-zinc-900 mt-2">
-                Administrator Authorization Required
+                Jersey Valley Admin Sign In
               </h1>
+              <p className="text-xs text-zinc-600 mt-1">
+                Sign in with your standalone administrator credentials to access and configure the
+                6-tab Admin Panel before connecting Firebase Authentication.
+              </p>
             </div>
-            <Lock className="w-7 h-7 text-zinc-800 shrink-0" />
+            <KeyRound className="w-7 h-7 text-[#111111] shrink-0" />
           </div>
 
-          <p className="text-xs sm:text-sm text-zinc-700 leading-relaxed">
-            {authErrorMessage ||
-              'Access to the Jersey Valley Admin Panel is strictly verified on the server for every API request. You must sign in with a verified Firebase account whose UID is authorized in ADMIN_UIDS.'}
-          </p>
-
-          {currentUser ? (
-            <div className="p-4 bg-[#F7F7F5] border border-zinc-200 space-y-3 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className="text-zinc-500 block">Signed-in Firebase Account:</span>
-                  <strong className="text-zinc-900">{currentUser.email}</strong>
-                  <span className="ml-2 text-[11px] text-zinc-500">
-                    ({currentUser.emailVerified ? 'Email Verified' : 'Email Unverified'})
-                  </span>
-                </div>
-                <Link
-                  to="/account"
-                  className="text-[#15803D] font-semibold hover:underline"
-                >
-                  Switch Account →
-                </Link>
+          {!standaloneConfigured && (
+            <div
+              role="alert"
+              className="p-4 bg-amber-50 border border-amber-300 text-xs text-amber-900 space-y-2"
+            >
+              <div className="flex items-center gap-2 font-bold">
+                <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>Standalone Admin Credentials Not Configured on Server</span>
               </div>
-
-              <div className="pt-2 border-t border-zinc-200">
-                <span className="text-zinc-500 block mb-1">
-                  Your Firebase Authentication UID (copy this into Vercel{' '}
-                  <code>ADMIN_UIDS</code>):
-                </span>
-                <div className="flex items-center justify-between gap-2 bg-white border border-zinc-300 px-3 py-2">
-                  <code className="font-mono-num text-xs font-bold text-zinc-900 break-all">
-                    {currentUser.uid}
-                  </code>
-                  <button
-                    type="button"
-                    onClick={handleCopyUid}
-                    className="px-3 py-1.5 bg-[#111111] text-white text-xs font-semibold hover:bg-[#15803D] flex items-center gap-1.5 shrink-0"
-                  >
-                    {copiedUid ? (
-                      <>
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Copied</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>Copy UID</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="p-4 bg-[#F7F7F5] border border-zinc-200 flex flex-wrap items-center justify-between gap-4">
-              <div className="text-xs text-zinc-700">
-                <strong className="block text-zinc-900">Not Signed In</strong>
-                Sign in with Google or your verified email on the Account page first to view your
-                Firebase UID or access the Admin Console.
-              </div>
-              <Link
-                to="/account"
-                className="px-5 py-2.5 bg-[#111111] text-white text-xs font-semibold hover:bg-[#15803D] transition-colors"
-              >
-                Sign In on Account Page →
-              </Link>
+              <p>{configNotice}</p>
+              {missingEnvVars.length > 0 && (
+                <p>
+                  Missing variables: <code>{missingEnvVars.join(', ')}</code>
+                </p>
+              )}
             </div>
           )}
 
-          <div className="border-t border-zinc-200 pt-4 space-y-2 text-xs text-zinc-600">
-            <strong className="text-zinc-900 block">
-              How to Authorize Your Account as Store Administrator on Vercel:
-            </strong>
-            <ol className="list-decimal list-inside space-y-1">
-              <li>Sign in at <code>/account</code> and copy your Firebase Authentication UID.</li>
-              <li>
-                In <strong>Vercel Dashboard → Project → Settings → Environment Variables</strong>,
-                set <code>ADMIN_UIDS</code> to your UID.
-              </li>
-              <li>
-                Set <code>FIREBASE_SERVICE_ACCOUNT_JSON</code> (server-only) for durable Cloud
-                Firestore persistence across serverless cold starts.
-              </li>
-              <li>Redeploy the project on Vercel and reload <code>/admin</code>.</li>
-            </ol>
+          {authStatusCode === 403 && currentUser && (
+            <div
+              role="alert"
+              className="p-3.5 bg-amber-50 border border-amber-200 text-xs text-amber-900"
+            >
+              <strong>Firebase Account Not Authorized as Admin (HTTP 403):</strong> You are signed
+              into the storefront as <strong>{currentUser.email}</strong>, which is a regular
+              customer account. Sign in below using your <strong>Standalone Admin ID</strong> to
+              access the Admin Console.
+            </div>
+          )}
+
+          {loginError && (
+            <div
+              role="alert"
+              className="p-3.5 bg-red-50 border border-red-300 text-xs text-red-900 font-medium flex items-start gap-2"
+            >
+              <AlertTriangle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
+              <span>{loginError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleStandaloneLogin} className="space-y-4" noValidate>
+            <div>
+              <label
+                htmlFor="standalone-admin-id"
+                className="block text-xs font-bold uppercase tracking-wider text-zinc-800 mb-1.5"
+              >
+                Admin ID
+              </label>
+              <input
+                id="standalone-admin-id"
+                name="adminId"
+                type="text"
+                autoComplete="username"
+                required
+                value={loginAdminId}
+                onChange={(e) => setLoginAdminId(e.target.value)}
+                placeholder="jvadmin"
+                className="w-full px-3.5 py-2.5 text-sm bg-white border border-zinc-300 text-zinc-900 focus:outline-none focus:border-[#111111] font-mono-num"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="standalone-admin-password"
+                className="block text-xs font-bold uppercase tracking-wider text-zinc-800 mb-1.5"
+              >
+                Administrator Password
+              </label>
+              <div className="relative flex items-center">
+                <input
+                  id="standalone-admin-password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  placeholder="Enter your administrator password"
+                  className="w-full pl-3.5 pr-20 py-2.5 text-sm bg-white border border-zinc-300 text-zinc-900 focus:outline-none focus:border-[#111111] font-mono-num"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  className="absolute right-2 px-2.5 py-1 text-xs font-semibold text-zinc-700 hover:text-[#111111] bg-zinc-100 hover:bg-zinc-200 border border-zinc-200 flex items-center gap-1"
+                >
+                  {showPassword ? (
+                    <>
+                      <EyeOff className="w-3.5 h-3.5" />
+                      <span>Hide</span>
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>Show</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loggingIn || !standaloneConfigured}
+              className="w-full py-3 px-5 bg-[#111111] text-white text-xs font-bold uppercase tracking-wider hover:bg-[#15803D] transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {loggingIn ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Verifying Credentials...</span>
+                </>
+              ) : (
+                <>
+                  <Lock className="w-4 h-4" />
+                  <span>Sign In to Admin Console</span>
+                </>
+              )}
+            </button>
+          </form>
+
+          <div className="border-t border-zinc-200 pt-4 space-y-2 text-[11px] text-zinc-600">
+            <div className="flex items-center justify-between">
+              <strong className="text-zinc-900 uppercase tracking-wider">
+                Security &amp; Architecture Notice
+              </strong>
+              <span className="font-mono-num text-zinc-500">HttpOnly · Bcrypt · CSRF</span>
+            </div>
+            <p className="leading-relaxed">
+              This temporary standalone login verifies credentials exclusively on the Express
+              backend against <code>ADMIN_LOGIN_ID</code> and <code>ADMIN_PASSWORD_HASH</code> using
+              bcrypt and issues an <code>HttpOnly</code>, <code>SameSite=Lax</code> session cookie.
+              When you later connect Firebase Authentication, the same <code>/api/admin/*</code>{' '}
+              routes also support verified Firebase Admin Bearer tokens via <code>ADMIN_UIDS</code>.
+            </p>
+            {currentUser && (
+              <div className="pt-2 flex items-center justify-between gap-2 bg-[#F7F7F5] border border-zinc-200 px-3 py-2">
+                <span className="truncate">
+                  Firebase UID: <code className="font-mono-num font-bold">{currentUser.uid}</code>
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyUid}
+                  className="px-2.5 py-1 bg-[#111111] text-white text-[11px] font-semibold hover:bg-[#15803D] flex items-center gap-1 shrink-0"
+                >
+                  {copiedUid ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedUid ? 'Copied' : 'Copy UID'}</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -755,7 +950,11 @@ export const AdminDashboardPage: React.FC = () => {
           <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
             <span>STORE ADMINISTRATION</span>
             <span aria-hidden="true">·</span>
-            <span>SERVER-VERIFIED FIREBASE RBAC</span>
+            <span>
+              {adminSessionMode === 'standalone'
+                ? 'TEMPORARY STANDALONE ADMIN AUTH'
+                : 'SERVER-VERIFIED FIREBASE RBAC'}
+            </span>
             <span aria-hidden="true">·</span>
             <span>PERSISTENCE: {persistenceBackend.toUpperCase()}</span>
           </div>
@@ -764,7 +963,7 @@ export const AdminDashboardPage: React.FC = () => {
           </h1>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={openCreateProductModal}
@@ -781,6 +980,14 @@ export const AdminDashboardPage: React.FC = () => {
             <RefreshCw className="w-3.5 h-3.5" />
             <span>Refresh Data</span>
           </button>
+          <button
+            type="button"
+            onClick={handleStandaloneLogout}
+            className="px-4 py-2 bg-white border border-zinc-300 text-zinc-900 text-xs font-semibold hover:bg-red-50 hover:border-red-300 hover:text-red-800 transition-colors flex items-center gap-1.5"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Log Out ({adminActorId})</span>
+          </button>
         </div>
       </div>
 
@@ -789,14 +996,23 @@ export const AdminDashboardPage: React.FC = () => {
         <div className="flex items-center gap-2.5">
           <ShieldCheck className="w-4 h-4 text-[#15803D] shrink-0" />
           <span>
-            <strong>Verified Administrator Session:</strong> {currentUser?.email} (UID:{' '}
-            <code className="font-mono-num">{currentUser?.uid}</code>) · All changes are validated
-            on the server and persisted via <code>{persistenceBackend}</code>.
+            <strong>
+              {adminSessionMode === 'standalone'
+                ? 'Temporary Standalone Administrator Session:'
+                : 'Verified Firebase Administrator Session:'}
+            </strong>{' '}
+            <code className="font-mono-num font-bold">{adminActorId}</code> · All changes are
+            validated on the server and persisted via <code>{persistenceBackend}</code>.
           </span>
         </div>
-        <Link to="/account" className="text-[#15803D] font-semibold hover:underline">
-          Account &amp; UID →
-        </Link>
+        <button
+          type="button"
+          onClick={handleStandaloneLogout}
+          className="text-[#15803D] font-semibold hover:underline flex items-center gap-1"
+        >
+          <span>End Session</span>
+          <LogOut className="w-3.5 h-3.5" />
+        </button>
       </div>
 
       {/* Navigation Tabs */}
