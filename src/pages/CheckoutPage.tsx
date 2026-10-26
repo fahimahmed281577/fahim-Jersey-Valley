@@ -9,8 +9,6 @@ import {
   ArrowLeft,
   Lock
 } from 'lucide-react';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useStore } from '../context/StoreContext';
 import {
   BANGLADESH_DIVISIONS,
@@ -162,108 +160,148 @@ export const CheckoutPage: React.FC = () => {
     setIsSubmitting(true);
     try {
       const authHeaders = await getAuthHeaders();
-      const response = await fetch('/api/orders', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authHeaders
-        },
-        body: JSON.stringify({
-          idempotencyKey,
-          customerName: customerName.trim(),
-          customerPhone: phoneCheck.normalized,
-          customerEmail: customerEmail.trim(),
-          division,
-          district,
-          upazila,
-          streetAddress: streetAddress.trim(),
-          postalCode: postalCode.trim(),
-          deliveryNotes: deliveryNotes.trim(),
-          paymentMethod,
-          couponCode: appliedCoupon || undefined,
-          items: cart.map((c) => ({
-            productId: c.productId,
-            size: c.size,
-            quantity: c.quantity,
-            customName: c.customName,
-            customNumber: c.customNumber
-          }))
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        setSubmitError(data.error || 'Could not place order. Please review your details.');
+      let response: Response;
+      try {
+        response = await fetch('/api/orders', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders
+          },
+          body: JSON.stringify({
+            idempotencyKey,
+            customerName: customerName.trim(),
+            customerPhone: phoneCheck.normalized,
+            customerEmail: customerEmail.trim(),
+            division,
+            district,
+            upazila,
+            streetAddress: streetAddress.trim(),
+            postalCode: postalCode.trim(),
+            deliveryNotes: deliveryNotes.trim(),
+            paymentMethod,
+            couponCode: appliedCoupon || undefined,
+            items: cart.map((c) => ({
+              productId: c.productId,
+              size: c.size,
+              quantity: c.quantity,
+              customName: c.customName,
+              customNumber: c.customNumber
+            }))
+          })
+        });
+      } catch (fetchErr) {
+        // True network level failure (connection dropped, DNS lookup failed, or browser offline)
+        console.error('Network failure connecting to /api/orders:', fetchErr);
+        setSubmitError(
+          'Network connection error while submitting your order. Please check your internet connection and try again. Your cart items and address are preserved, and our idempotent order key prevents duplicate charges.'
+        );
         setIsSubmitting(false);
         return;
       }
 
-      const createdOrder = data.order;
-      if (createdOrder?.orderNumber && data.orderAccessToken) {
+      // Read response body safely without throwing on non-JSON content (e.g. HTML 502/504 error pages)
+      let responseText = '';
+      try {
+        responseText = await response.text();
+      } catch {
+        // failed to read response stream
+      }
+
+      let data: {
+        error?: string;
+        order?: any;
+        orderAccessToken?: string;
+        duplicatePrevented?: boolean;
+      } | null = null;
+
+      try {
+        data = responseText ? JSON.parse(responseText) : null;
+      } catch {
+        // response was not JSON
+      }
+
+      if (!response.ok) {
+        if (data && typeof data.error === 'string' && data.error.trim()) {
+          setSubmitError(data.error);
+        } else if (response.status === 503) {
+          setSubmitError(
+            'Order processing service is temporarily unavailable (HTTP 503). Cloud Firestore persistence configuration is required.'
+          );
+        } else if (response.status === 502 || response.status === 504) {
+          setSubmitError(
+            `Server gateway timeout (${response.status}). Your order may still be processing. Please wait a moment and verify in Order Tracking before retrying.`
+          );
+        } else if (response.status === 409) {
+          setSubmitError(
+            data?.error ||
+              'Inventory conflict: one or more items in your cart just sold out. Please review your cart.'
+          );
+        } else {
+          setSubmitError(
+            `Unable to submit order (HTTP ${response.status}). Please review your details and try again.`
+          );
+        }
+        setIsSubmitting(false);
+        return;
+      }
+
+      const createdOrder = data?.order;
+      if (!createdOrder?.orderNumber) {
+        setSubmitError('Unexpected response from server: order details were not returned.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Store order access token in sessionStorage for guest tracking
+      if (data?.orderAccessToken) {
         try {
           const existingRaw = sessionStorage.getItem('jv_order_tokens_v1');
           const tokenMap = existingRaw ? JSON.parse(existingRaw) : {};
           tokenMap[String(createdOrder.orderNumber).toUpperCase()] = String(data.orderAccessToken);
           sessionStorage.setItem('jv_order_tokens_v1', JSON.stringify(tokenMap));
         } catch {
-          // ignore storage errors
+          // ignore session storage failure
         }
       }
 
-      // Save shipping address if checked
+      // Save shipping address for next time if opted in (isolated to prevent order disruption)
       if (saveAddressForNextTime) {
-        await saveCustomerAddress({
-          phone: phoneCheck.normalized,
-          division,
-          district,
-          upazila,
-          streetAddress: streetAddress.trim(),
-          postalCode: postalCode.trim()
-        });
-      }
-
-      // Also persist to Firestore /orders/{orderNumber} if user is authenticated and verified
-      if (currentUser && currentUser.emailVerified && createdOrder) {
-        const orderDocPath = `orders/${createdOrder.orderNumber}`;
         try {
-          await setDoc(doc(db, 'orders', createdOrder.orderNumber), {
-            orderNumber: createdOrder.orderNumber,
-            userId: currentUser.uid,
-            customerName: createdOrder.customerName.slice(0, 80),
-            customerPhone: createdOrder.customerPhone.slice(0, 20),
-            division: createdOrder.division.slice(0, 40),
-            district: createdOrder.district.slice(0, 40),
-            upazila: createdOrder.upazila.slice(0, 60),
-            streetAddress: createdOrder.streetAddress.slice(0, 200),
-            paymentMethod: createdOrder.paymentMethod,
-            paymentStatus: createdOrder.paymentStatus,
-            orderStatus: createdOrder.orderStatus,
-            subtotalBdt: createdOrder.subtotalBdt,
-            shippingBdt: createdOrder.shippingBdt,
-            discountBdt: createdOrder.discountBdt,
-            totalBdt: createdOrder.totalBdt,
-            itemCount: createdOrder.itemCount,
-            itemsSummary: createdOrder.items
-              .map(
-                (i: { productName: string; size: string; quantity: number }) =>
-                  `${i.productName} (${i.size}) x${i.quantity}`
-              )
-              .join(', ')
-              .slice(0, 500),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
+          await saveCustomerAddress({
+            phone: phoneCheck.normalized,
+            division,
+            district,
+            upazila,
+            streetAddress: streetAddress.trim(),
+            postalCode: postalCode.trim()
           });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, orderDocPath);
+        } catch {
+          // address save failure should never abort a confirmed order
         }
       }
 
-      await refreshCatalog();
+      // Refresh catalog in background to update inventory counts
+      try {
+        await refreshCatalog();
+      } catch {
+        // ignore background catalog refresh error
+      }
+
+      // Clear the cart and navigate to the order confirmation page
       clearCart();
-      pushToast(`Order ${createdOrder.orderNumber} placed!`, 'success');
+      pushToast(
+        data?.duplicatePrevented
+          ? `Order ${createdOrder.orderNumber} already confirmed!`
+          : `Order ${createdOrder.orderNumber} placed successfully!`,
+        'success'
+      );
       navigate(`/orders/${createdOrder.orderNumber}`);
-    } catch {
-      setSubmitError('Network error while submitting order. Please try again.');
+    } catch (unexpectedErr) {
+      console.error('Unexpected checkout submission error:', unexpectedErr);
+      setSubmitError(
+        'An unexpected error occurred while placing your order. Please try again or contact support.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -765,10 +803,21 @@ export const CheckoutPage: React.FC = () => {
             {submitError && (
               <div
                 role="alert"
-                className="p-3 bg-red-50 border border-red-300 text-xs text-red-800 flex items-start gap-2"
+                className="p-3.5 bg-red-50 border border-red-300 text-xs text-red-800 space-y-2"
               >
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{submitError}</span>
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-600" />
+                  <span className="leading-relaxed">{submitError}</span>
+                </div>
+                <div className="pl-6 text-[11px] text-red-700 flex items-center gap-2">
+                  <span>Already placed an order?</span>
+                  <Link
+                    to="/track"
+                    className="font-semibold underline hover:text-red-900"
+                  >
+                    Check Order Tracking
+                  </Link>
+                </div>
               </div>
             )}
 
