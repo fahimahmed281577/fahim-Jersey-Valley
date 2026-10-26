@@ -1,0 +1,196 @@
+/**
+ * LUMOS DESIGN SYSTEM (Astro-Native)
+ * Single Source of Truth for Design Tokens, Fluid Typography, Spacing & Layout
+ * Tailored for Jersey Valley Football E-Commerce
+ */
+
+:root {
+  /* ==========================================================================
+     1. SURFACES & COLOR TOKENS
+     ========================================================================== */
+  --light-100: #FFFFFF;
+  --light-200: #F7F7F5; /* Jersey Valley signature warm off-white */
+  --light-300: #EAEAE6;
+  
+  --dark-700: #262626;
+  --dark-800: #171717;
+  --dark-900: #0D0D0D;
+
+  /* Football Accent Palette */
+  --brand-500: #15803d; /* Pitch emerald green */
+  --brand-600: #14532d; /* Deep stadium green */
+  --brand-400: #22c55e; /* Highlight green */
+  --brand-text: #FFFFFF; /* High-contrast foreground */
+
+  /* Neutral Spectrum */
+  --neutral-50: #FAFAFA;
+  --neutral-100: #F4F4F5;
+  --neutral-200: #E4E4E7;
+  --neutral-400: #A1A1AA;
+  --neutral-600: #52525B;
+  --neutral-800: #27272A;
+  --neutral-900: #111111;
+
+  /* Status Tokens */
+  --color-success: #15803d;
+  --color-warning: #d97706;
+  --color-error: #dc2626;
+
+  /* Backward Compatibility Aliases for Jersey Valley */
+  --jv-black: var(--neutral-900);
+  --jv-white: var(--light-100);
+  --jv-offwhite: var(--light-200);
+  --jv-green: var(--brand-500);
+  --jv-green-dark: var(--brand-600);
+  --jv-muted: var(--neutral-600);
+  --jv-border: var(--neutral-200);
+
+  /* ==========================================================================
+     2. FLUID BREAKPOINTLESS TYPOGRAPHY (320px -> 1440px)
+     ========================================================================== */
+  --font-family-primary: 'Plus Jakarta Sans', 'Noto Sans Bengali', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-family-display: 'Barlow Condensed', 'Noto Sans Bengali', sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'Noto Sans Bengali', monospace;
+
+  /* Fluid font sizes via CSS clamp */
+  --text-size-caption: clamp(0.75rem, 0.714rem + 0.179vw, 0.875rem);
+  --text-size-body-sm: clamp(0.8125rem, 0.777rem + 0.179vw, 0.9375rem);
+  --text-size-body: clamp(0.9375rem, 0.902rem + 0.179vw, 1.0625rem);
+  --text-size-h4: clamp(1.125rem, 1.054rem + 0.357vw, 1.375rem);
+  --text-size-h3: clamp(1.35rem, 1.236rem + 0.571vw, 1.75rem);
+  --text-size-h2: clamp(1.75rem, 1.536rem + 1.071vw, 2.5rem);
+  --text-size-h1: clamp(2.25rem, 1.821rem + 2.143vw, 3.75rem);
+  --text-size-display: clamp(2.75rem, 2.107rem + 3.214vw, 5rem);
+
+  /* Leading-Trim Font Metric Tokens (Removes dead space from display caps) */
+  --primary-trim-top: 0.18em;
+  --primary-trim-bottom: 0.22em;
+
+  /* Line Heights */
+  --line-height-tight: 1.05;
+  --line-height-snug: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.65;
+
+  /* ==========================================================================
+     3. FLUID BREAKPOINTLESS SPACING SCALE (320px -> 1440px)
+     ========================================================================== */
+  --space-1: clamp(0.25rem, 0.232rem + 0.089vw, 0.3125rem);   /* 4px -> 5px */
+  --space-2: clamp(0.5rem, 0.464rem + 0.179vw, 0.625rem);     /* 8px -> 10px */
+  --space-3: clamp(0.75rem, 0.696rem + 0.268vw, 0.9375rem);   /* 12px -> 15px */
+  --space-4: clamp(1rem, 0.929rem + 0.357vw, 1.25rem);        /* 16px -> 20px */
+  --space-5: clamp(1.25rem, 1.161rem + 0.446vw, 1.5625rem);   /* 20px -> 25px */
+  --space-6: clamp(1.5rem, 1.393rem + 0.536vw, 1.875rem);     /* 24px -> 30px */
+  --space-8: clamp(2rem, 1.857rem + 0.714vw, 2.5rem);         /* 32px -> 40px */
+  --space-10: clamp(2.5rem, 2.321rem + 0.893vw, 3.125rem);    /* 40px -> 50px */
+  --space-12: clamp(3rem, 2.786rem + 1.071vw, 3.75rem);       /* 48px -> 60px */
+  --space-16: clamp(4rem, 3.714rem + 1.429vw, 5rem);          /* 64px -> 80px */
+  --space-20: clamp(5rem, 4.643rem + 1.786vw, 6.25rem);       /* 80px -> 100px */
+
+  /* ==========================================================================
+     4. ACCESSIBILITY, BORDERS & FOCUS RINGS
+     ========================================================================== */
+  --border-width: 0.0625rem; /* 1px crisp hairline */
+  --border-radius-sm: 0.125rem;
+  --border-radius-md: 0.25rem;
+  --border-radius-lg: 0.5rem;
+  
+  --focus-width: 0.125rem; /* 2px */
+  --focus-offset: 0.125rem; /* 2px */
+  --focus-color: var(--brand-500);
+
+  /* Container width bounds */
+  --container-max: 80rem; /* 1280px */
+  --container-gutter: var(--space-4);
+}
+
+/* ==========================================================================
+   5. LUMOS UTILITY PRIMITIVES
+   ========================================================================== */
+
+/* Layout Primitives */
+.lumos-container {
+  width: 100%;
+  max-width: var(--container-max);
+  margin-inline: auto;
+  padding-inline: var(--container-gutter);
+}
+
+.lumos-section {
+  padding-block: var(--space-12);
+}
+
+.lumos-section-lg {
+  padding-block: var(--space-16);
+}
+
+.lumos-grid {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.lumos-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Fluid Typography Classes */
+.text-style-display {
+  font-family: var(--font-family-display);
+  font-size: var(--text-size-display);
+  line-height: var(--line-height-tight);
+  letter-spacing: 0.02em;
+}
+
+.text-style-h1 {
+  font-family: var(--font-family-display);
+  font-size: var(--text-size-h1);
+  line-height: var(--line-height-tight);
+  letter-spacing: 0.02em;
+}
+
+.text-style-h2 {
+  font-family: var(--font-family-display);
+  font-size: var(--text-size-h2);
+  line-height: var(--line-height-snug);
+  letter-spacing: 0.02em;
+}
+
+.text-style-h3 {
+  font-family: var(--font-family-primary);
+  font-size: var(--text-size-h3);
+  line-height: var(--line-height-snug);
+  font-weight: 700;
+}
+
+.text-style-h4 {
+  font-family: var(--font-family-primary);
+  font-size: var(--text-size-h4);
+  line-height: var(--line-height-snug);
+  font-weight: 600;
+}
+
+.text-style-body {
+  font-family: var(--font-family-primary);
+  font-size: var(--text-size-body);
+  line-height: var(--line-height-normal);
+}
+
+.text-style-caption {
+  font-family: var(--font-family-primary);
+  font-size: var(--text-size-caption);
+  line-height: var(--line-height-normal);
+}
+
+/* Leading Trim for razor-sharp sports display text */
+.lumos-trim {
+  margin-block-start: calc(var(--primary-trim-top) * -1);
+  margin-block-end: calc(var(--primary-trim-bottom) * -1);
+}
+
+/* Token-driven focus indicator */
+:focus-visible {
+  outline: var(--focus-width) solid var(--focus-color) !important;
+  outline-offset: var(--focus-offset) !important;
+}

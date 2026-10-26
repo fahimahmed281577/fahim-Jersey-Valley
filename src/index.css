@@ -1,14 +1,16 @@
 @import "tailwindcss";
+@import "./styles/lumos.css";
 
 @layer base {
   :root {
-    --jv-black: #111111;
-    --jv-white: #ffffff;
-    --jv-offwhite: #f7f7f5;
-    --jv-green: #15803d;
-    --jv-green-dark: #14532d;
-    --jv-muted: #52525b;
-    --jv-border: #e4e4e7;
+    /* Legacy aliases mapped directly to Lumos tokens */
+    --jv-black: var(--neutral-900);
+    --jv-white: var(--light-100);
+    --jv-offwhite: var(--light-200);
+    --jv-green: var(--brand-500);
+    --jv-green-dark: var(--brand-600);
+    --jv-muted: var(--neutral-600);
+    --jv-border: var(--neutral-200);
   }
 
   html {

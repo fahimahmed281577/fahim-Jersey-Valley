@@ -16,6 +16,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { useStore } from '../context/StoreContext';
 import { ProductCard } from '../components/ProductCard';
 import { JerseyVisualizer } from '../components/JerseyVisualizer';
+import { ResponsiveImage } from '../components/common/ResponsiveImage';
 import {
   formatBdt,
   getEffectiveProductPriceBdt,
@@ -589,13 +590,24 @@ export const HomePage: React.FC = () => {
                           transition={{ duration: 0.28, ease: EASE_OUT_EXPO }}
                           className="w-full h-full"
                         >
-                          <JerseyVisualizer
-                            visual={currentHeroProduct.visual}
-                            team={currentHeroProduct.team}
-                            editionTier={currentHeroProduct.editionTier}
-                            view={heroViewMode}
-                            className="w-full h-full"
-                          />
+                          {heroViewMode === 'front' ? (
+                            <ResponsiveImage
+                              productId={currentHeroProduct.id}
+                              alt={currentHeroProduct.name}
+                              priority={true}
+                              sizes="(max-width: 1024px) 100vw, 40vw"
+                              className="w-full h-full"
+                              fallbackColor={currentHeroProduct.visual?.secondaryColor || '#F7F7F5'}
+                            />
+                          ) : (
+                            <JerseyVisualizer
+                              visual={currentHeroProduct.visual}
+                              team={currentHeroProduct.team}
+                              editionTier={currentHeroProduct.editionTier}
+                              view={heroViewMode}
+                              className="w-full h-full"
+                            />
+                          )}
                         </motion.div>
                       </AnimatePresence>
                     </Link>
@@ -1136,13 +1148,23 @@ export const HomePage: React.FC = () => {
                         to={`/product/${activeCampaignSlide.product.slug}`}
                         className="flex-1 flex items-center justify-center min-h-[220px] w-full bg-[#EFEFEC] overflow-hidden p-2"
                       >
-                        <JerseyVisualizer
-                          visual={activeCampaignSlide.product.visual}
-                          team={activeCampaignSlide.product.team}
-                          editionTier={activeCampaignSlide.product.editionTier}
-                          view={panel.view}
-                          className="w-full h-full transition-transform duration-500 ease-out-expo group-hover:scale-[1.06]"
-                        />
+                        {panel.view === 'front' ? (
+                          <ResponsiveImage
+                            productId={activeCampaignSlide.product.id}
+                            alt={activeCampaignSlide.product.name}
+                            sizes="(max-width: 640px) 100vw, 33vw"
+                            className="w-full h-full transition-transform duration-500 ease-out-expo group-hover:scale-[1.06]"
+                            fallbackColor={activeCampaignSlide.product.visual?.secondaryColor || '#F7F7F5'}
+                          />
+                        ) : (
+                          <JerseyVisualizer
+                            visual={activeCampaignSlide.product.visual}
+                            team={activeCampaignSlide.product.team}
+                            editionTier={activeCampaignSlide.product.editionTier}
+                            view={panel.view}
+                            className="w-full h-full transition-transform duration-500 ease-out-expo group-hover:scale-[1.06]"
+                          />
+                        )}
                       </Link>
                       <div className="p-3.5 border-t border-zinc-800 bg-[#141417] space-y-1">
                         <div className="text-xs font-bold text-white uppercase tracking-wide">

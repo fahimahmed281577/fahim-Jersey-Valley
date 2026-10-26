@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { motion, useReducedMotion } from 'motion/react';
 import { StoreProvider } from './context/StoreContext';
 import { Layout } from './components/Layout';
@@ -14,7 +14,6 @@ import { ProductDetailPage } from './pages/ProductDetailPage';
 import { CheckoutPage } from './pages/CheckoutPage';
 import { OrderTrackingPage } from './pages/OrderTrackingPage';
 import { WishlistPage } from './pages/WishlistPage';
-import { AccountPage } from './pages/AccountPage';
 import { AdminDashboardPage } from './pages/AdminDashboardPage';
 
 const AnimatedRoutes: React.FC = () => {
@@ -42,7 +41,7 @@ const AnimatedRoutes: React.FC = () => {
         <Route path="/track" element={<OrderTrackingPage />} />
         <Route path="/orders/:orderNumber" element={<OrderTrackingPage />} />
         <Route path="/wishlist" element={<WishlistPage />} />
-        <Route path="/account" element={<AccountPage />} />
+        <Route path="/account" element={<Navigate to="/track" replace />} />
         <Route path="/admin" element={<AdminDashboardPage />} />
       </Routes>
     </motion.div>

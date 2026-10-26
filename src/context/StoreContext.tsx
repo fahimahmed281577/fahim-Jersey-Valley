@@ -1,11 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
   onAuthStateChanged,
-  signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
-  updateProfile,
   signOut,
   type User
 } from 'firebase/auth';
@@ -105,10 +100,6 @@ interface StoreContextValue {
   getAuthHeaders: () => Promise<Record<string, string>>;
   savedAddress: CustomerAddressProfile;
   saveCustomerAddress: (address: CustomerAddressProfile) => Promise<void>;
-  loginWithGoogle: () => Promise<void>;
-  loginWithEmail: (email: string, pass: string) => Promise<void>;
-  registerWithEmail: (name: string, email: string, pass: string) => Promise<void>;
-  sendPasswordReset: (email: string) => Promise<void>;
   logoutUser: () => Promise<void>;
 
   toasts: ToastMessage[];
@@ -515,42 +506,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     [currentUser, pushToast]
   );
 
-  const loginWithGoogle = useCallback(async () => {
-    await signInWithPopup(auth, googleProvider);
-    pushToast('Signed in with Google', 'success');
-  }, [pushToast]);
-
-  const loginWithEmail = useCallback(
-    async (email: string, pass: string) => {
-      await signInWithEmailAndPassword(auth, email.trim(), pass);
-      pushToast('Signed in to Jersey Valley', 'success');
-    },
-    [pushToast]
-  );
-
-  const registerWithEmail = useCallback(
-    async (name: string, email: string, pass: string) => {
-      const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
-      if (name.trim()) {
-        await updateProfile(cred.user, { displayName: name.trim().slice(0, 80) });
-      }
-      pushToast('Account created! Welcome to Jersey Valley.', 'success');
-    },
-    [pushToast]
-  );
-
-  const sendPasswordReset = useCallback(
-    async (email: string) => {
-      await sendPasswordResetEmail(auth, email.trim());
-      pushToast('Password reset link sent to your email.', 'info');
-    },
-    [pushToast]
-  );
-
   const logoutUser = useCallback(async () => {
     await signOut(auth);
     setIsAdmin(false);
-    pushToast('Signed out of your account', 'info');
+    pushToast('Signed out of session', 'info');
   }, [pushToast]);
 
   const cartCount = cart.reduce((acc, item) => acc + item.quantity, 0);
@@ -585,10 +544,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         getAuthHeaders,
         savedAddress,
         saveCustomerAddress,
-        loginWithGoogle,
-        loginWithEmail,
-        registerWithEmail,
-        sendPasswordReset,
         logoutUser,
         toasts,
         pushToast,

@@ -46,6 +46,9 @@ export const INITIAL_COUPONS: CouponDefinition[] = [
 export const INITIAL_CATALOG: Product[] = [
   {
     id: 'arg-home-2026',
+    primaryImage: '/images/products/arg-home-2026.jpg',
+    responsiveImageBase: '/images/products/arg-home-2026',
+    imageUrls: ['/images/products/arg-home-2026.jpg', '/images/products/arg-home-2026.webp'],
     slug: 'argentina-2026-home-fan-replica',
     name: 'Argentina 2026 Home Fan Replica Jersey',
     team: 'Argentina',
@@ -88,6 +91,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'bd-home-2026',
+    primaryImage: '/images/products/bd-home-2026.jpg',
+    responsiveImageBase: '/images/products/bd-home-2026',
+    imageUrls: ['/images/products/bd-home-2026.jpg', '/images/products/bd-home-2026.webp'],
     slug: 'bangladesh-national-green-home-replica',
     name: 'Bangladesh Bengal Green Home Fan Replica Jersey',
     team: 'Bangladesh',
@@ -130,6 +136,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'bra-home-2026',
+    primaryImage: '/images/products/bra-home-2026.jpg',
+    responsiveImageBase: '/images/products/bra-home-2026',
+    imageUrls: ['/images/products/bra-home-2026.jpg', '/images/products/bra-home-2026.webp'],
     slug: 'brazil-2026-home-fan-replica',
     name: 'Brazil 2026 Seleção Yellow Home Fan Replica',
     team: 'Brazil',
@@ -172,6 +181,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'rma-home-2526',
+    primaryImage: '/images/products/rma-home-2526.jpg',
+    responsiveImageBase: '/images/products/rma-home-2526',
+    imageUrls: ['/images/products/rma-home-2526.jpg', '/images/products/rma-home-2526.webp'],
     slug: 'real-madrid-25-26-home-player-fit-replica',
     name: 'Madrid Blanco 25/26 Home Player Fit Replica',
     team: 'Real Madrid',
@@ -213,6 +225,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'fcb-retro-1999',
+    primaryImage: '/images/products/fcb-retro-1999.jpg',
+    responsiveImageBase: '/images/products/fcb-retro-1999',
+    imageUrls: ['/images/products/fcb-retro-1999.jpg', '/images/products/fcb-retro-1999.webp'],
     slug: 'barcelona-1999-centenary-retro-replica',
     name: 'Barcelona 1999 Centenary Heritage Retro Replica',
     team: 'FC Barcelona',
@@ -253,6 +268,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'ger-home-2026',
+    primaryImage: '/images/products/ger-home-2026.jpg',
+    responsiveImageBase: '/images/products/ger-home-2026',
+    imageUrls: ['/images/products/ger-home-2026.jpg', '/images/products/ger-home-2026.webp'],
     slug: 'germany-2026-home-fan-replica',
     name: 'Germany 2026 Home Classic Fan Replica Jersey',
     team: 'Germany',
@@ -294,6 +312,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'fra-away-2026',
+    primaryImage: '/images/products/fra-away-2026.jpg',
+    responsiveImageBase: '/images/products/fra-away-2026',
+    imageUrls: ['/images/products/fra-away-2026.jpg', '/images/products/fra-away-2026.webp'],
     slug: 'france-2026-away-pinstripe-fan-replica',
     name: 'France 2026 Away Pinstripe Fan Replica Jersey',
     team: 'France',
@@ -334,6 +355,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'esp-home-2026',
+    primaryImage: '/images/products/esp-home-2026.jpg',
+    responsiveImageBase: '/images/products/esp-home-2026',
+    imageUrls: ['/images/products/esp-home-2026.jpg', '/images/products/esp-home-2026.webp'],
     slug: 'spain-2026-home-crimson-fan-replica',
     name: 'Spain 2026 La Roja Home Fan Replica Jersey',
     team: 'Spain',
@@ -374,6 +398,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'acm-retro-2007',
+    primaryImage: '/images/products/acm-retro-2007.jpg',
+    responsiveImageBase: '/images/products/acm-retro-2007',
+    imageUrls: ['/images/products/acm-retro-2007.jpg', '/images/products/acm-retro-2007.webp'],
     slug: 'milan-2007-athens-retro-replica',
     name: 'Milan 2007 Rossoneri Heritage Retro Replica',
     team: 'AC Milan',
@@ -414,6 +441,9 @@ export const INITIAL_CATALOG: Product[] = [
   },
   {
     id: 'ars-third-2526',
+    primaryImage: '/images/products/ars-third-2526.jpg',
+    responsiveImageBase: '/images/products/ars-third-2526',
+    imageUrls: ['/images/products/ars-third-2526.jpg', '/images/products/ars-third-2526.webp'],
     slug: 'north-london-25-26-forest-third-replica',
     name: 'North London 25/26 Forest Green Third Fan Replica',
     team: 'Arsenal FC',

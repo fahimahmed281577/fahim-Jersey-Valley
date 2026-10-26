@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { JerseyVisualizer } from '../components/JerseyVisualizer';
+import { ResponsiveImage } from '../components/common/ResponsiveImage';
 import { ProductCard } from '../components/ProductCard';
 import {
   formatBdt,
@@ -196,18 +197,22 @@ export const ProductDetailPage: React.FC = () => {
         {/* Left: Studio Image Gallery */}
         <div className="lg:col-span-7 space-y-4">
           <div className="relative aspect-[4/3] w-full bg-[#EFEFEC] border border-zinc-200 overflow-hidden">
-            {activeView === 'photo' && uploadedPhotos[selectedPhotoIdx] ? (
-              <img
-                src={uploadedPhotos[selectedPhotoIdx]}
-                alt={`${product.name} photo ${selectedPhotoIdx + 1}`}
-                className="w-full h-full object-cover"
+            {activeView === 'front' || activeView === 'photo' ? (
+              <ResponsiveImage
+                productId={product.id}
+                alt={product.name}
+                priority={true}
+                sizes="(max-width: 1024px) 100vw, 60vw"
+                className="w-full h-full"
+                imageClassName="object-contain sm:object-cover"
+                fallbackColor={product.visual?.secondaryColor || '#F7F7F5'}
               />
             ) : (
               <JerseyVisualizer
                 visual={product.visual}
                 team={product.team}
                 editionTier={product.editionTier}
-                view={activeView === 'photo' ? 'front' : activeView}
+                view={activeView}
                 customName={customName}
                 customNumber={customNumber}
                 className="w-full h-full"

@@ -62,6 +62,8 @@ export interface Product {
   variants: SizeVariant[];
   visual: KitVisualSpec;
   imageUrls?: string[];
+  primaryImage?: string;
+  responsiveImageBase?: string;
 }
 
 export function getEffectiveProductPriceBdt(

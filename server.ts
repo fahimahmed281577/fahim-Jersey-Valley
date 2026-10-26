@@ -343,7 +343,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     return {
       authorized: false,
       reason:
-        'To protect customer privacy, please provide the 11-digit Bangladesh mobile number used when placing this order (or sign in to the customer account that placed it).'
+        'To protect customer privacy, please provide the 11-digit Bangladesh mobile number used when placing this order (or use the order access token link).'
     };
   }
 

@@ -9,6 +9,7 @@ import {
   type JerseySize
 } from '../lib/commerce';
 import { JerseyVisualizer } from './JerseyVisualizer';
+import { ResponsiveImage } from './common/ResponsiveImage';
 import { useStore } from '../context/StoreContext';
 
 interface ProductCardProps {
@@ -113,19 +114,22 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
           >
             <div className="w-full h-full transition-transform duration-500 ease-out-expo group-hover:scale-[1.05]">
               <AnimatePresence mode="wait" initial={false}>
-                {currentUploadedImageUrl && activeView === 'front' ? (
-                  <motion.img
-                    key={`img-${currentUploadedImageUrl}`}
-                    src={currentUploadedImageUrl}
-                    alt={product.name}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
+                {activeView === 'front' ? (
+                  <motion.div
+                    key={`img-${product.id}`}
                     initial={shouldReduceMotion ? false : { opacity: 0.25, scale: 0.98 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={shouldReduceMotion ? undefined : { opacity: 0 }}
                     transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-                    className="w-full h-full object-cover"
-                  />
+                    className="w-full h-full"
+                  >
+                    <ResponsiveImage
+                      productId={product.id}
+                      alt={product.name}
+                      sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                      fallbackColor={product.visual?.secondaryColor || '#F7F7F5'}
+                    />
+                  </motion.div>
                 ) : (
                   <motion.div
                     key={`viz-${activeView}`}

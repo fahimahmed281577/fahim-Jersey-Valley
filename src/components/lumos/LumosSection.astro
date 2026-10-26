@@ -1,0 +1,14 @@
+---
+export interface Props {
+  className?: string;
+  size?: 'normal' | 'large';
+  id?: string;
+}
+
+const { className = '', size = 'normal', id } = Astro.props;
+const sectionClass = size === 'large' ? 'lumos-section-lg' : 'lumos-section';
+---
+
+<section id={id} class={`${sectionClass} ${className}`}>
+  <slot />
+</section>

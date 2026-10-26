@@ -1,0 +1,19 @@
+---
+export interface Props {
+  className?: string;
+  cols?: 2 | 3 | 4;
+}
+
+const { className = '', cols = 3 } = Astro.props;
+
+const colClass =
+  cols === 2
+    ? 'grid-cols-1 sm:grid-cols-2'
+    : cols === 4
+    ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+    : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
+---
+
+<div class={`lumos-grid ${colClass} ${className}`}>
+  <slot />
+</div>

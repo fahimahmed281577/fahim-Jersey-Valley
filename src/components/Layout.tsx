@@ -4,7 +4,6 @@ import {
   ShoppingBag,
   Search,
   Heart,
-  User,
   Menu,
   X,
   Trash2,
@@ -17,8 +16,7 @@ import {
 import { formatBdt } from '../lib/commerce';
 import { useStore } from '../context/StoreContext';
 import { JerseyVisualizer } from './JerseyVisualizer';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { ResponsiveImage } from './common/ResponsiveImage';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const {
@@ -31,7 +29,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     updateCartQuantity,
     removeFromCart,
     wishlistIds,
-    currentUser,
     toasts,
     dismissToast,
     pushToast
@@ -66,18 +63,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       return;
     }
 
-    if (currentUser && currentUser.emailVerified) {
-      try {
-        await addDoc(collection(db, 'newsletterSubscriptions'), {
-          userId: currentUser.uid,
-          email: cleanEmail.slice(0, 120),
-          consentGiven: true,
-          createdAt: serverTimestamp()
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, 'newsletterSubscriptions');
-      }
-    }
 
     setNewsletterEmail('');
     setNewsletterConsent(false);
@@ -226,11 +211,12 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               <span>Saved ({wishlistIds.length})</span>
             </Link>
             <Link
-              to="/account"
+              to="/track"
               className="hover:text-[#15803D] flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              aria-label="Track your order"
             >
-              <User className="w-3.5 h-3.5" />
-              <span>{currentUser ? currentUser.displayName || 'My Account' : 'Sign In / Account'}</span>
+              <Truck className="w-3.5 h-3.5" />
+              <span>Track Order</span>
             </Link>
             <Link
               to="/admin"
@@ -288,13 +274,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               className="py-1.5 border-b border-zinc-100"
             >
               Wishlist ({wishlistIds.length})
-            </Link>
-            <Link
-              to="/account"
-              onClick={() => setMobileMenuOpen(false)}
-              className="py-1.5 border-b border-zinc-100"
-            >
-              Customer Account
             </Link>
             <Link
               to="/admin"
@@ -393,16 +372,25 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                     key={item.lineKey}
                     className="flex gap-3.5 pb-4 border-b border-zinc-200"
                   >
-                    <div className="w-20 h-20 shrink-0 border border-zinc-200 bg-[#EFEFEC]">
-                      <JerseyVisualizer
-                        visual={item.visual}
-                        team={item.team}
-                        editionTier={item.editionTier}
-                        view={item.hasCustomPrint ? 'back' : 'front'}
-                        customName={item.customName}
-                        customNumber={item.customNumber}
-                        className="w-full h-full"
-                      />
+                    <div className="w-20 h-20 shrink-0 border border-zinc-200 bg-[#EFEFEC] overflow-hidden">
+                      {item.hasCustomPrint ? (
+                        <JerseyVisualizer
+                          visual={item.visual}
+                          team={item.team}
+                          editionTier={item.editionTier}
+                          view="back"
+                          customName={item.customName}
+                          customNumber={item.customNumber}
+                          className="w-full h-full"
+                        />
+                      ) : (
+                        <ResponsiveImage
+                          productId={item.productId}
+                          alt={item.productName}
+                          sizes="80px"
+                          className="w-full h-full"
+                        />
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <Link
@@ -622,9 +610,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="flex items-center gap-4">
               <Link to="/track" className="hover:text-zinc-300">
                 Order Tracking
-              </Link>
-              <Link to="/account" className="hover:text-zinc-300">
-                Customer Account
               </Link>
               <Link to="/admin" className="hover:text-zinc-300">
                 Admin Console
