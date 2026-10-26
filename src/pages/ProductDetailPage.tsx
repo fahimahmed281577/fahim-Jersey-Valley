@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Heart,
   Ruler,
@@ -20,9 +20,11 @@ import {
   validateCustomization,
   type JerseySize
 } from '../lib/commerce';
+import { usePageSeo } from '../lib/seo';
 
 export const ProductDetailPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const {
     products,
@@ -45,24 +47,44 @@ export const ProductDetailPage: React.FC = () => {
   const [sizeGuideOpen, setSizeGuideOpen] = useState<boolean>(false);
   const [zoomModalOpen, setZoomModalOpen] = useState<boolean>(false);
 
-  // Reset local state when navigating between products
+  usePageSeo({
+    title: product
+      ? `${product.name} (${formatBdt(getEffectiveProductPriceBdt(product))}) — Jersey Valley`
+      : 'Jersey Not Found — Jersey Valley',
+    description: product
+      ? `${product.name} (${product.editionTier}) in BDT (${formatBdt(getEffectiveProductPriceBdt(product))}). ${product.fabricSpec}. Optional custom name & squad number printing with Bangladesh Cash on Delivery.`
+      : 'Browse fan replica, player-fit, and retro football jerseys at Jersey Valley Bangladesh.',
+    canonicalPath: product ? `/product/${product.slug}` : '/shop',
+    ogType: product ? 'product' : 'website',
+    productJsonLd: product || null
+  });
+
+  // Reset local state when navigating between products, prefilling custom name/number if passed via query string
   useEffect(() => {
-    setActiveView(
-      product?.imageUrls && product.imageUrls.length > 0 ? 'photo' : 'front'
-    );
+    const paramName = (searchParams.get('name') || '')
+      .toUpperCase()
+      .replace(/[^A-Z.\-\s]/g, '')
+      .slice(0, 12);
+    const paramNumber = (searchParams.get('number') || '')
+      .replace(/\D/g, '')
+      .slice(0, 2);
+
+    if (paramName || paramNumber) {
+      setCustomName(paramName);
+      setCustomNumber(paramNumber);
+      setActiveView('back');
+    } else {
+      setCustomName('');
+      setCustomNumber('');
+      setActiveView(
+        product?.imageUrls && product.imageUrls.length > 0 ? 'photo' : 'front'
+      );
+    }
     setSelectedPhotoIdx(0);
     setSelectedSize(null);
     setQuantity(1);
-    setCustomName('');
-    setCustomNumber('');
     setFormError(null);
-    if (product) {
-      document.title = `${product.name} (${formatBdt(getEffectiveProductPriceBdt(product))}) — Jersey Valley`;
-    }
-    return () => {
-      document.title = 'Jersey Valley — Football Jerseys Bangladesh';
-    };
-  }, [slug, product]);
+  }, [slug, product, searchParams]);
 
   if (!product) {
     return (
@@ -213,6 +235,7 @@ export const ProductDetailPage: React.FC = () => {
               <button
                 key={viewTab.id}
                 type="button"
+                aria-pressed={activeView === viewTab.id}
                 onClick={() => setActiveView(viewTab.id as 'front' | 'back' | 'detail')}
                 className={`p-2.5 border text-left transition-colors ${
                   activeView === viewTab.id
@@ -333,7 +356,7 @@ export const ProductDetailPage: React.FC = () => {
               </button>
             </div>
 
-            <div className="grid grid-cols-5 gap-2" role="radiogroup" aria-label="Select jersey size">
+            <div className="grid grid-cols-5 gap-2" role="group" aria-label="Select jersey size">
               {product.variants.map((v) => {
                 const outOfStock = !v.isActive || v.stock <= 0;
                 const isSelected = selectedSize === v.size;

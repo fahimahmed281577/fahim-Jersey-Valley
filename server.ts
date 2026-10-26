@@ -422,6 +422,23 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   // Unauthenticated -> 401 | Authenticated Non-Admin -> 403
   // ============================================================================
 
+  // Router-level guard for all /api/admin/* endpoints:
+  // Enforces Cache-Control: no-store and requires server-side admin auth on every route
+  // except the session check, login, and logout endpoints.
+  app.use('/api/admin', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const subPath = req.path.replace(/\/+$/, '') || '/';
+    if (
+      subPath === '/auth/session' ||
+      subPath === '/auth/login' ||
+      subPath === '/auth/logout'
+    ) {
+      next();
+      return;
+    }
+    requireAdmin(req, res, next);
+  });
+
   // 5a. Check Current Admin Session & Standalone Configuration Readiness
   app.get('/api/admin/auth/session', rateLimitMiddleware('admin-session'), async (req, res) => {
     const configStatus = getStandaloneAdminConfigStatus();
@@ -453,6 +470,18 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
           persistenceBackend: store.backendType
         });
       }
+      return res.json({
+        authenticated: false,
+        authMode: null,
+        adminId: null,
+        firebaseUserAuthenticated: true,
+        isAdmin: false,
+        userEmail: user.email || null,
+        standaloneConfigured: configStatus.configured,
+        missingEnvVars: configStatus.missingVars,
+        configNotice: configStatus.configured ? null : configStatus.reason || null,
+        persistenceBackend: store.backendType
+      });
     }
 
     return res.json({

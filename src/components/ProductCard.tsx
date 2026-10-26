@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Heart, ShoppingBag, ArrowUpRight, Check } from 'lucide-react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
@@ -36,6 +36,19 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
   const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
   const [justAdded, setJustAdded] = useState<boolean>(false);
 
+  // Keep selectedSize synchronized with live variant stock so the button label and added size always match
+  useEffect(() => {
+    if (availableSizes.length > 0 && !availableSizes.includes(selectedSize)) {
+      setSelectedSize(
+        availableSizes.includes('L')
+          ? 'L'
+          : availableSizes.includes('M')
+            ? 'M'
+            : availableSizes[0]
+      );
+    }
+  }, [availableSizes, selectedSize]);
+
   const totalStock = product.variants.reduce(
     (acc, v) => acc + (v.isActive ? v.stock : 0),
     0
@@ -57,19 +70,19 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
     e.stopPropagation();
     if (totalStock <= 0 || availableSizes.length === 0) return;
 
-    const targetSize = availableSizes.includes(selectedSize)
-      ? selectedSize
-      : availableSizes[0];
+    if (!availableSizes.includes(selectedSize)) {
+      pushToast(`Size ${selectedSize} is currently out of stock.`, 'error');
+      return;
+    }
 
     const result = addToCart({
       product,
-      size: targetSize,
+      size: selectedSize,
       quantity: 1
     });
 
     if (result.ok) {
       setJustAdded(true);
-      pushToast(`Added ${product.team} (${targetSize}) to bag`, 'success');
       setTimeout(() => setJustAdded(false), 1600);
     } else if (result.error) {
       pushToast(result.error, 'error');

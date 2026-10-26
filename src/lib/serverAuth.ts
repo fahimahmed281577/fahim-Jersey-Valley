@@ -574,18 +574,34 @@ export function extractStandaloneAdminSession(
   return { session, rawToken };
 }
 
-/**
- * Invalidates a standalone admin session token on the server so it cannot be reused after logout.
- */
 export function revokeStandaloneAdminSession(
   rawToken: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env
 ): void {
   if (!rawToken) return;
-  const session = verifyStandaloneAdminSessionToken(rawToken, { env });
-  if (session?.jti) {
-    revokedStandaloneSessionIds.add(session.jti);
-    activeStandaloneSessions.delete(session.jti);
+  const parts = String(rawToken).trim().split('.');
+  if (parts.length !== 2) return;
+  const [encodedPayload, providedSig] = parts;
+  const secret = (env.ADMIN_SESSION_SECRET || '').trim();
+  if (!encodedPayload || !providedSig || !secret) return;
+
+  const expectedSig = signStandalonePayload(encodedPayload, secret);
+  const sigBufA = Buffer.from(providedSig, 'utf8');
+  const sigBufB = Buffer.from(expectedSig, 'utf8');
+  if (sigBufA.length !== sigBufB.length || !crypto.timingSafeEqual(sigBufA, sigBufB)) {
+    return;
+  }
+
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(encodedPayload, 'base64url').toString('utf8')
+    ) as Partial<StandaloneAdminSessionPayload>;
+    if (typeof decoded?.jti === 'string' && decoded.jti) {
+      revokedStandaloneSessionIds.add(decoded.jti);
+      activeStandaloneSessions.delete(decoded.jti);
+    }
+  } catch {
+    // ignore malformed payload
   }
 }
 

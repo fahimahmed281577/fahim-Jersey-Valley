@@ -172,3 +172,55 @@ test('checkIsServerAdmin requires emailVerified and checks custom claims or ADMI
 
   delete process.env.ADMIN_UIDS;
 });
+
+test('Standalone Admin session cookie lifecycle enforces HMAC signature, CSRF header, and server-side revocation', async () => {
+  const {
+    createStandaloneAdminSession,
+    verifyStandaloneAdminSessionToken,
+    revokeStandaloneAdminSession,
+    verifyStandaloneCsrfRequest
+  } = await import('./serverAuth');
+
+  const testEnv: NodeJS.ProcessEnv = {
+    NODE_ENV: 'test',
+    ADMIN_LOGIN_ID: 'jvadmin',
+    ADMIN_PASSWORD_HASH: '$2b$10$CwTycUXWue0Thq9StjUM0uJ8D0R5xW8P7x.yG8.V1v9Q1y1O1y1O1',
+    ADMIN_SESSION_SECRET: 'super-secret-32-character-minimum-session-key-123456'
+  };
+
+  const { token, payload } = createStandaloneAdminSession('jvadmin', {
+    env: testEnv,
+    nowSeconds: 1760000000
+  });
+
+  const verified = verifyStandaloneAdminSessionToken(token, {
+    env: testEnv,
+    nowSeconds: 1760000100
+  });
+  assert.ok(verified);
+  assert.equal(verified.sub, 'jvadmin');
+  assert.equal(verified.csrf, payload.csrf);
+
+  // State-changing POST without CSRF header fails
+  const postNoCsrf = {
+    method: 'POST',
+    headers: {}
+  } as unknown as import('express').Request;
+  assert.equal(verifyStandaloneCsrfRequest(postNoCsrf, verified), false);
+
+  // State-changing POST with matching X-CSRF-Token succeeds
+  const postWithCsrf = {
+    method: 'POST',
+    headers: { 'x-csrf-token': payload.csrf }
+  } as unknown as import('express').Request;
+  assert.equal(verifyStandaloneCsrfRequest(postWithCsrf, verified), true);
+
+  // Revoking session invalidates token immediately
+  revokeStandaloneAdminSession(token, testEnv);
+  const afterRevoke = verifyStandaloneAdminSessionToken(token, {
+    env: testEnv,
+    nowSeconds: 1760000100
+  });
+  assert.equal(afterRevoke, null);
+});
+

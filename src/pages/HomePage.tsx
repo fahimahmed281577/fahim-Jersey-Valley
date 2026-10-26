@@ -20,8 +20,10 @@ import {
   formatBdt,
   getEffectiveProductPriceBdt,
   type JerseyCategory,
+  type JerseySize,
   type Product
 } from '../lib/commerce';
+import { usePageSeo } from '../lib/seo';
 
 const EASE_OUT_EXPO: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
@@ -85,31 +87,32 @@ export const HomePage: React.FC = () => {
   const { products, settings, addToCart, pushToast } = useStore();
   const shouldReduceMotion = useReducedMotion();
 
+  usePageSeo({
+    title: 'Jersey Valley — Football Jerseys Bangladesh | National, Club & Retro Kits',
+    description:
+      'Shop fan replica, player-fit, and heritage retro football jerseys in Bangladesh. Custom name & squad number printing, BDT (৳) pricing, and nationwide Cash on Delivery.',
+    canonicalPath: '/'
+  });
+
   const [activeCollectionTab, setActiveCollectionTab] = useState<'all' | JerseyCategory>('all');
   const [heroShowcaseIndex, setHeroShowcaseIndex] = useState<number>(0);
   const [heroViewMode, setHeroViewMode] = useState<'front' | 'back' | 'detail'>('front');
   const [studioName, setStudioName] = useState<string>('HAMZA');
   const [studioNumber, setStudioNumber] = useState<string>('8');
 
-  // Pointer-driven parallax state (only enabled on hover-capable fine pointers and non-reduced-motion)
+  // Pointer-driven parallax & cursor follower via DOM refs (zero React re-renders on pointermove)
   const [canHoverPointer, setCanHoverPointer] = useState<boolean>(false);
-  const [heroParallax, setHeroParallax] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-
-  // Scoped custom cursor follower state for interactive campaign & collection panels (desktop only)
-  const [cursorState, setCursorState] = useState<{
-    visible: boolean;
-    label: string;
-    x: number;
-    y: number;
-  }>({
+  const heroParallaxRef = useRef<HTMLDivElement | null>(null);
+  const heroRafRef = useRef<number | null>(null);
+  const cursorFollowerRef = useRef<HTMLDivElement | null>(null);
+  const [cursorBadge, setCursorBadge] = useState<{ visible: boolean; label: string }>({
     visible: false,
-    label: 'EXPLORE',
-    x: 0,
-    y: 0
+    label: 'EXPLORE'
   });
 
   // Horizontal campaign carousel state
   const [campaignIndex, setCampaignIndex] = useState<number>(0);
+  const [campaignSelectedSize, setCampaignSelectedSize] = useState<JerseySize>('L');
   const touchStartXRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -120,7 +123,12 @@ export const HomePage: React.FC = () => {
     };
     updatePointerCapability();
     mql.addEventListener?.('change', updatePointerCapability);
-    return () => mql.removeEventListener?.('change', updatePointerCapability);
+    return () => {
+      mql.removeEventListener?.('change', updatePointerCapability);
+      if (heroRafRef.current !== null) {
+        cancelAnimationFrame(heroRafRef.current);
+      }
+    };
   }, [shouldReduceMotion]);
 
   const activeCatalog = useMemo(
@@ -267,6 +275,33 @@ export const HomePage: React.FC = () => {
 
   const activeCampaignSlide = campaignSlides[campaignIndex] || campaignSlides[0];
 
+  const campaignAvailableSizes = useMemo(() => {
+    if (!activeCampaignSlide?.product) return [] as JerseySize[];
+    return activeCampaignSlide.product.variants
+      .filter((v) => v.isActive && v.stock > 0)
+      .map((v) => v.size);
+  }, [activeCampaignSlide]);
+
+  useEffect(() => {
+    if (campaignAvailableSizes.length > 0 && !campaignAvailableSizes.includes(campaignSelectedSize)) {
+      setCampaignSelectedSize(
+        campaignAvailableSizes.includes('L')
+          ? 'L'
+          : campaignAvailableSizes.includes('M')
+            ? 'M'
+            : campaignAvailableSizes[0]
+      );
+    }
+  }, [campaignAvailableSizes, campaignSelectedSize]);
+
+  const studioProduct = useMemo(
+    () =>
+      activeCatalog.find((p) => p.id === 'bd-home-2026') ||
+      activeCatalog[0] ||
+      products[0],
+    [activeCatalog, products]
+  );
+
   const retroSpotlightProducts = useMemo(
     () => activeCatalog.filter((p) => p.category === 'retro').slice(0, 2),
     [activeCatalog]
@@ -277,19 +312,32 @@ export const HomePage: React.FC = () => {
   );
 
   const handleHeroPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!canHoverPointer || shouldReduceMotion) return;
+    if (!canHoverPointer || shouldReduceMotion || !heroParallaxRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const normX = (e.clientX - rect.left) / rect.width - 0.5;
     const normY = (e.clientY - rect.top) / rect.height - 0.5;
-    setHeroParallax({
-      x: Math.round(normX * 18),
-      y: Math.round(normY * 14)
+    const offsetX = Math.round(normX * 16);
+    const offsetY = Math.round(normY * 12);
+
+    if (heroRafRef.current !== null) {
+      cancelAnimationFrame(heroRafRef.current);
+    }
+    heroRafRef.current = requestAnimationFrame(() => {
+      if (heroParallaxRef.current) {
+        heroParallaxRef.current.style.transform = `translate3d(${offsetX}px, ${offsetY}px, 0) scale(1.02)`;
+      }
     });
   };
 
   const handleHeroPointerLeave = () => {
-    setHeroParallax({ x: 0, y: 0 });
+    if (heroRafRef.current !== null) {
+      cancelAnimationFrame(heroRafRef.current);
+      heroRafRef.current = null;
+    }
+    if (heroParallaxRef.current) {
+      heroParallaxRef.current.style.transform = 'translate3d(0px, 0px, 0) scale(1)';
+    }
   };
 
   const handleScopedCursorMove = (
@@ -297,18 +345,16 @@ export const HomePage: React.FC = () => {
     label: string
   ) => {
     if (!canHoverPointer || shouldReduceMotion) return;
-    setCursorState({
-      visible: true,
-      label,
-      x: e.clientX,
-      y: e.clientY
-    });
+    if (cursorFollowerRef.current) {
+      cursorFollowerRef.current.style.transform = `translate3d(${e.clientX + 16}px, ${e.clientY + 16}px, 0)`;
+    }
+    setCursorBadge((prev) =>
+      prev.visible && prev.label === label ? prev : { visible: true, label }
+    );
   };
 
   const handleScopedCursorLeave = () => {
-    if (cursorState.visible) {
-      setCursorState((prev) => ({ ...prev, visible: false }));
-    }
+    setCursorBadge((prev) => (prev.visible ? { ...prev, visible: false } : prev));
   };
 
   const stepCampaignSlide = (direction: -1 | 1) => {
@@ -329,37 +375,35 @@ export const HomePage: React.FC = () => {
     }
   };
 
-  const handleCampaignQuickAdd = (product: Product) => {
-    const firstAvailable = product.variants.find((v) => v.isActive && v.stock > 0);
-    if (!firstAvailable) {
-      pushToast('This jersey is currently out of stock.', 'error');
+  const handleCampaignQuickAdd = (product: Product, size: JerseySize) => {
+    const selectedVariant = product.variants.find(
+      (v) => v.size === size && v.isActive && v.stock > 0
+    );
+    if (!selectedVariant) {
+      pushToast(`Size ${size} is currently out of stock.`, 'error');
       return;
     }
     const res = addToCart({
       product,
-      size: firstAvailable.size,
+      size: selectedVariant.size,
       quantity: 1
     });
-    if (res.ok) {
-      pushToast(`Added ${product.team} (${firstAvailable.size}) to bag`, 'success');
-    } else if (res.error) {
+    if (!res.ok && res.error) {
       pushToast(res.error, 'error');
     }
   };
 
   return (
     <div className="relative overflow-x-hidden">
-      {/* Desktop-Only Scoped Custom Cursor Follower (Never hides native cursor) */}
-      {canHoverPointer && !shouldReduceMotion && cursorState.visible && (
+      {/* Desktop-Only Scoped Custom Cursor Follower (Zero React state re-renders on pointermove) */}
+      {canHoverPointer && !shouldReduceMotion && cursorBadge.visible && (
         <div
+          ref={cursorFollowerRef}
           aria-hidden="true"
-          className="fixed top-0 left-0 z-50 pointer-events-none transition-transform duration-75 ease-out"
-          style={{
-            transform: `translate3d(${cursorState.x + 16}px, ${cursorState.y + 16}px, 0)`
-          }}
+          className="fixed top-0 left-0 z-50 pointer-events-none transition-transform duration-75 ease-out will-change-transform"
         >
           <span className="inline-block px-2.5 py-1 bg-[#15803D] text-white text-[10px] font-mono-num font-bold uppercase tracking-widest shadow-md border border-white/20">
-            {cursorState.label}
+            {cursorBadge.label}
           </span>
         </div>
       )}
@@ -417,7 +461,7 @@ export const HomePage: React.FC = () => {
                   triggerOnScroll={false}
                   baseDelay={0.12}
                   className="font-display font-bold uppercase tracking-tight text-white leading-[0.92]"
-                  style={{ fontSize: 'clamp(3.1rem, 6.8vw, 5.6rem)' }}
+                  style={{ fontSize: 'clamp(2.65rem, 6.8vw, 5.6rem)' }}
                 />
 
                 {/* Step 4: Supporting text fades in after the headline */}
@@ -528,14 +572,8 @@ export const HomePage: React.FC = () => {
                 {/* Parallax Studio Jersey Frame */}
                 <div className="relative aspect-[4/3] w-full bg-[#EFEFEC] overflow-hidden border border-zinc-700/60">
                   <div
+                    ref={heroParallaxRef}
                     className="w-full h-full transition-transform duration-200 ease-out will-change-transform"
-                    style={
-                      canHoverPointer && !shouldReduceMotion
-                        ? {
-                            transform: `translate3d(${heroParallax.x}px, ${heroParallax.y}px, 0) scale(1.03)`
-                          }
-                        : undefined
-                    }
                   >
                     <Link
                       to={`/product/${currentHeroProduct.slug}`}
@@ -796,7 +834,7 @@ export const HomePage: React.FC = () => {
           {/* Interactive Segmented Collection Controls */}
           <div
             className="flex flex-wrap items-center gap-1 p-1 bg-zinc-200/80"
-            role="tablist"
+            role="group"
             aria-label="Filter featured jerseys by collection"
           >
             {[
@@ -808,10 +846,9 @@ export const HomePage: React.FC = () => {
               <button
                 key={tab.id}
                 type="button"
-                role="tab"
-                aria-selected={activeCollectionTab === tab.id}
+                aria-pressed={activeCollectionTab === tab.id}
                 onClick={() => setActiveCollectionTab(tab.id as 'all' | JerseyCategory)}
-                className={`px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-[#15803D] ${
+                className={`px-3.5 sm:px-4 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-[#15803D] ${
                   activeCollectionTab === tab.id
                     ? 'bg-[#111111] text-white'
                     : 'text-zinc-700 hover:text-zinc-900'
@@ -897,20 +934,19 @@ export const HomePage: React.FC = () => {
               </div>
 
               {/* Visible Keyboard & Touch Navigation Controls */}
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center justify-between sm:justify-start gap-3">
                 <div
-                  className="flex items-center gap-1"
-                  role="tablist"
+                  className="flex flex-wrap items-center gap-1.5"
+                  role="group"
                   aria-label="Select campaign chapter"
                 >
                   {campaignSlides.map((slide, idx) => (
                     <button
                       key={slide.code}
                       type="button"
-                      role="tab"
-                      aria-selected={campaignIndex === idx}
+                      aria-pressed={campaignIndex === idx}
                       onClick={() => setCampaignIndex(idx)}
-                      className={`px-3 py-2 text-xs font-mono-num font-bold transition-colors ${
+                      className={`px-3 py-2 text-xs font-mono-num font-bold transition-colors whitespace-nowrap ${
                         campaignIndex === idx
                           ? 'bg-[#15803D] text-white'
                           : 'bg-zinc-900 text-zinc-400 hover:text-white border border-zinc-800'
@@ -926,7 +962,7 @@ export const HomePage: React.FC = () => {
                     type="button"
                     onClick={() => stepCampaignSlide(-1)}
                     aria-label="Previous campaign slide"
-                    className="w-10 h-10 bg-zinc-900 border border-zinc-700 text-white hover:bg-[#15803D] hover:border-[#15803D] transition-colors flex items-center justify-center"
+                    className="w-10 h-10 bg-zinc-900 border border-zinc-700 text-white hover:bg-[#15803D] hover:border-[#15803D] transition-colors flex items-center justify-center focus-visible:outline-2 focus-visible:outline-[#22C55E]"
                   >
                     <ArrowLeft className="w-4 h-4" />
                   </button>
@@ -934,7 +970,7 @@ export const HomePage: React.FC = () => {
                     type="button"
                     onClick={() => stepCampaignSlide(1)}
                     aria-label="Next campaign slide"
-                    className="w-10 h-10 bg-zinc-900 border border-zinc-700 text-white hover:bg-[#15803D] hover:border-[#15803D] transition-colors flex items-center justify-center"
+                    className="w-10 h-10 bg-zinc-900 border border-zinc-700 text-white hover:bg-[#15803D] hover:border-[#15803D] transition-colors flex items-center justify-center focus-visible:outline-2 focus-visible:outline-[#22C55E]"
                   >
                     <ArrowRight className="w-4 h-4" />
                   </button>
@@ -955,9 +991,14 @@ export const HomePage: React.FC = () => {
                 {/* Left Campaign Editorial Narrative (5 Columns) */}
                 <div className="lg:col-span-5 bg-[#18181B] border border-zinc-800 p-6 sm:p-8 flex flex-col justify-between space-y-6">
                   <div className="space-y-4">
-                    <span className="inline-block text-xs font-mono-num uppercase text-zinc-400">
-                      {activeCampaignSlide.specCallout}
-                    </span>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="inline-block text-xs font-mono-num uppercase text-zinc-400">
+                        {activeCampaignSlide.specCallout}
+                      </span>
+                      <span className="text-[10px] font-mono-num uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-700 text-zinc-300">
+                        Illustrative Studio Render · Real Catalog Stock
+                      </span>
+                    </div>
                     <h3
                       className="font-display font-bold uppercase text-white leading-[0.94]"
                       style={{ fontSize: 'clamp(2.2rem, 4vw, 3.4rem)' }}
@@ -970,33 +1011,87 @@ export const HomePage: React.FC = () => {
                   </div>
 
                   <div className="space-y-4 pt-6 border-t border-zinc-800">
-                    <div className="flex items-baseline justify-between">
+                    <div className="flex items-baseline justify-between gap-2">
                       <div>
-                        <span className="text-xs text-zinc-400 block">Featured Campaign Kit</span>
+                        <span className="text-xs text-zinc-400 block">
+                          Featured Purchasable Kit ({activeCampaignSlide.product.editionTier})
+                        </span>
                         <strong className="text-base text-white">
                           {activeCampaignSlide.product.name}
                         </strong>
                       </div>
-                      <span className="font-mono-num text-xl font-bold text-[#22C55E]">
+                      <span className="font-mono-num text-xl font-bold text-[#22C55E] shrink-0">
                         {formatBdt(getEffectiveProductPriceBdt(activeCampaignSlide.product))}
                       </span>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3">
+                    {/* Real Variant Stock & Size Selection on Campaign Card */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs text-zinc-400">
+                        <span>Select Size for Quick Add:</span>
+                        <span className="font-mono-num text-zinc-300">
+                          {activeCampaignSlide.product.variants.reduce(
+                            (acc, v) => acc + (v.isActive ? v.stock : 0),
+                            0
+                          )}{' '}
+                          total units in stock
+                        </span>
+                      </div>
+                      <div
+                        className="flex flex-wrap items-center gap-1.5"
+                        role="group"
+                        aria-label={`Select campaign jersey size for ${activeCampaignSlide.product.name}`}
+                      >
+                        {activeCampaignSlide.product.variants
+                          .filter((v) => v.isActive)
+                          .map((v) => {
+                            const inStock = v.stock > 0;
+                            const isSelected = campaignSelectedSize === v.size && inStock;
+                            return (
+                              <button
+                                key={v.size}
+                                type="button"
+                                disabled={!inStock}
+                                onClick={() => setCampaignSelectedSize(v.size)}
+                                aria-pressed={isSelected}
+                                aria-label={`Campaign size ${v.size}${inStock ? ` (${v.stock} left)` : ' (Out of stock)'}`}
+                                className={`px-2.5 py-1 text-xs font-mono-num font-semibold border transition-colors ${
+                                  !inStock
+                                    ? 'border-zinc-800 bg-zinc-900/50 text-zinc-600 line-through cursor-not-allowed'
+                                    : isSelected
+                                      ? 'border-[#22C55E] bg-[#15803D] text-white'
+                                      : 'border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-white'
+                                }`}
+                              >
+                                {v.size} ({v.stock})
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
                       <Link
                         to={`/product/${activeCampaignSlide.product.slug}`}
-                        className="px-5 py-3 bg-[#15803D] text-white text-xs font-bold uppercase tracking-wider hover:bg-[#14532D] transition-colors inline-flex items-center gap-2 whitespace-nowrap"
+                        className="px-5 py-3 bg-[#15803D] text-white text-xs font-bold uppercase tracking-wider hover:bg-[#14532D] transition-colors inline-flex items-center gap-2 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-white"
                       >
                         <span>Shop This Kit</span>
                         <ArrowRight className="w-4 h-4" />
                       </Link>
                       <button
                         type="button"
-                        onClick={() => handleCampaignQuickAdd(activeCampaignSlide.product)}
-                        className="px-5 py-3 bg-white text-[#111111] text-xs font-bold uppercase tracking-wider hover:bg-zinc-200 transition-colors inline-flex items-center gap-2 whitespace-nowrap"
+                        disabled={campaignAvailableSizes.length === 0}
+                        onClick={() =>
+                          handleCampaignQuickAdd(activeCampaignSlide.product, campaignSelectedSize)
+                        }
+                        className="px-5 py-3 bg-white text-[#111111] text-xs font-bold uppercase tracking-wider hover:bg-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-[#22C55E]"
                       >
                         <ShoppingBag className="w-3.5 h-3.5" />
-                        <span>Quick Add to Bag</span>
+                        <span>
+                          {campaignAvailableSizes.length > 0
+                            ? `Quick Add · Size ${campaignSelectedSize}`
+                            : 'Out of Stock'}
+                        </span>
                       </button>
                     </div>
                   </div>
@@ -1016,7 +1111,7 @@ export const HomePage: React.FC = () => {
                         view: 'back',
                         caption: `02 · BACK #${activeCampaignSlide.product.visual.defaultPreviewNumber}`,
                         title: `Custom #${activeCampaignSlide.product.visual.defaultPreviewNumber} ${activeCampaignSlide.product.visual.defaultPreviewName}`,
-                        detail: 'Optional +৳350 heat-pressed matte PU name & squad number'
+                        detail: `Optional +${formatBdt(activeCampaignSlide.product.customPrintPriceBdt)} heat-pressed matte PU name & squad number`
                       },
                       {
                         view: 'detail',
@@ -1121,13 +1216,25 @@ export const HomePage: React.FC = () => {
                       {formatBdt(getEffectiveProductPriceBdt(item))}
                     </span>
                   </div>
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-500 font-mono-num">
+                    <span>
+                      Sizes:{' '}
+                      {item.variants
+                        .filter((v) => v.isActive && v.stock > 0)
+                        .map((v) => v.size)
+                        .join(', ') || 'Sold Out'}
+                    </span>
+                    <span>
+                      {item.variants.reduce((acc, v) => acc + (v.isActive ? v.stock : 0), 0)} in stock
+                    </span>
+                  </div>
                 </Link>
               ))}
             </div>
 
             <div className="pt-2 flex items-center justify-between border-t border-zinc-100">
               <span className="text-xs text-zinc-500">
-                Unofficial heritage tribute replicas · S to XL
+                Unofficial heritage tribute replicas · Live size-verified stock
               </span>
               <Link
                 to="/shop?category=retro"
@@ -1184,6 +1291,18 @@ export const HomePage: React.FC = () => {
                       {formatBdt(getEffectiveProductPriceBdt(item))}
                     </span>
                   </div>
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-500 font-mono-num">
+                    <span>
+                      Sizes:{' '}
+                      {item.variants
+                        .filter((v) => v.isActive && v.stock > 0)
+                        .map((v) => v.size)
+                        .join(', ') || 'Sold Out'}
+                    </span>
+                    <span>
+                      {item.variants.reduce((acc, v) => acc + (v.isActive ? v.stock : 0), 0)} in stock
+                    </span>
+                  </div>
                 </Link>
               ))}
             </div>
@@ -1222,15 +1341,14 @@ export const HomePage: React.FC = () => {
                 <div className="flex items-center gap-2 text-xs text-zinc-500 mb-2">
                   <span>CUSTOM THERMAL PRINTING</span>
                   <span aria-hidden="true">·</span>
-                  <span>+৳300 TO ৳400 PER SHIRT</span>
+                  <span>+{formatBdt(studioProduct.customPrintPriceBdt)} ON {studioProduct.team.toUpperCase()} KIT</span>
                 </div>
                 <h2 className="font-display text-2xl sm:text-3xl font-bold uppercase text-zinc-900 mb-2">
                   Personalize Your Back Print
                 </h2>
                 <p className="text-xs text-zinc-600 leading-relaxed mb-5">
-                  Test how your custom name and squad number look on our Bangladesh Bengal Green
-                  replica jersey. Every product page includes live back-view customization before
-                  you add to bag.
+                  Test how your custom name and squad number look on our {studioProduct.name}.
+                  Every product page includes live back-view customization before you add to bag.
                 </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
@@ -1275,11 +1393,9 @@ export const HomePage: React.FC = () => {
 
               <div className="aspect-[4/3] w-full bg-[#EFEFEC] border border-zinc-200 overflow-hidden mb-4">
                 <JerseyVisualizer
-                  visual={
-                    products.find((p) => p.id === 'bd-home-2026')?.visual || products[0].visual
-                  }
-                  team="Bangladesh"
-                  editionTier="Fan Replica"
+                  visual={studioProduct.visual}
+                  team={studioProduct.team}
+                  editionTier={studioProduct.editionTier}
                   view="back"
                   customName={studioName}
                   customNumber={studioNumber}
@@ -1287,13 +1403,13 @@ export const HomePage: React.FC = () => {
                 />
               </div>
 
-              <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
                 <span className="text-xs text-zinc-600">
-                  Previewing: <strong>Bangladesh Home Replica</strong> ({studioName || 'NO NAME'} #
+                  Previewing: <strong>{studioProduct.name}</strong> ({studioName || 'NO NAME'} #
                   {studioNumber || '—'})
                 </span>
                 <Link
-                  to="/product/bangladesh-national-green-home-replica"
+                  to={`/product/${studioProduct.slug}?name=${encodeURIComponent(studioName)}&number=${encodeURIComponent(studioNumber)}`}
                   className="px-4 py-2 bg-[#111111] text-white text-xs font-semibold hover:bg-[#15803D] transition-colors whitespace-nowrap shrink-0"
                 >
                   Customize &amp; Order →

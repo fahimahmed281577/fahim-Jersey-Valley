@@ -20,6 +20,7 @@ import {
   type PaymentMethod
 } from '../lib/commerce';
 import { JerseyVisualizer } from '../components/JerseyVisualizer';
+import { usePageSeo } from '../lib/seo';
 
 export const CheckoutPage: React.FC = () => {
   const navigate = useNavigate();
@@ -36,6 +37,14 @@ export const CheckoutPage: React.FC = () => {
     refreshCatalog,
     pushToast
   } = useStore();
+
+  usePageSeo({
+    title: 'Bangladesh Checkout & Cash on Delivery — Jersey Valley',
+    description:
+      'Complete your Jersey Valley football jersey order with nationwide Bangladesh delivery across all 8 divisions and Cash on Delivery (COD).',
+    canonicalPath: '/checkout',
+    robots: 'noindex, nofollow'
+  });
 
   const [customerName, setCustomerName] = useState<string>(
     currentUser?.displayName || ''
@@ -741,7 +750,7 @@ export const CheckoutPage: React.FC = () => {
               )}
 
               <div className="flex justify-between text-zinc-600">
-                <span>Shipping ({calculation.shippingZoneLabel || `${division} / ${district}`})</span>
+                <span>Shipping · {calculation.shippingZoneLabel || `${division} / ${district}`}</span>
                 <span className="font-mono-num font-semibold text-zinc-900">
                   {calculation.shippingBdt === 0 ? 'FREE' : formatBdt(calculation.shippingBdt)}
                 </span>

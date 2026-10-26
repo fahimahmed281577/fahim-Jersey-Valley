@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { formatBdt, type OrderStatus, type PaymentStatus } from '../lib/commerce';
 import { useStore } from '../context/StoreContext';
+import { usePageSeo } from '../lib/seo';
 
 interface OrderDetailData {
   id: string;
@@ -76,6 +77,15 @@ export function getSavedOrderAccessToken(orderNumber: string): string {
 export const OrderTrackingPage: React.FC = () => {
   const { orderNumber: routeOrderNumber } = useParams<{ orderNumber?: string }>();
   const { savedAddress, getAuthHeaders, refreshCatalog, pushToast } = useStore();
+
+  usePageSeo({
+    title: routeOrderNumber
+      ? `Order ${routeOrderNumber.toUpperCase()} Tracking — Jersey Valley`
+      : 'Track Your Bangladesh Football Jersey Order — Jersey Valley',
+    description:
+      'Track your Jersey Valley order status, Cash on Delivery (COD) dispatch updates, and delivery history across Bangladesh.',
+    canonicalPath: '/track'
+  });
 
   const [lookupInput, setLookupInput] = useState<string>(
     routeOrderNumber || 'JV-DEMO-0001'

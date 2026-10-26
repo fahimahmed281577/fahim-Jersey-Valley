@@ -3,10 +3,18 @@ import { Link } from 'react-router-dom';
 import { Heart } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { ProductCard } from '../components/ProductCard';
+import { usePageSeo } from '../lib/seo';
 
 export const WishlistPage: React.FC = () => {
   const { products, wishlistIds } = useStore();
   const savedProducts = products.filter((p) => wishlistIds.includes(p.id));
+
+  usePageSeo({
+    title: `Saved Jerseys Wishlist (${savedProducts.length}) — Jersey Valley`,
+    description:
+      'Review your saved National Team, Club, and Retro replica football jerseys at Jersey Valley Bangladesh.',
+    canonicalPath: '/wishlist'
+  });
 
   return (
     <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-10">

@@ -54,6 +54,7 @@ import {
 } from '../lib/firebase';
 import { JerseyVisualizer } from '../components/JerseyVisualizer';
 import { useStore } from '../context/StoreContext';
+import { usePageSeo } from '../lib/seo';
 
 type SanitizedOrder = Omit<StoredOrder, 'orderAccessToken' | 'idempotencyKey'>;
 
@@ -140,6 +141,14 @@ function createEmptyProductDraft(): UpsertProductInput {
 
 export const AdminDashboardPage: React.FC = () => {
   const { currentUser, isAdmin, getAuthHeaders, refreshCatalog, pushToast } = useStore();
+
+  usePageSeo({
+    title: 'Administrator Console — Jersey Valley',
+    description:
+      'Protected Jersey Valley administrator dashboard for inventory, order fulfillment, customer management, and Bangladesh store settings.',
+    canonicalPath: '/admin',
+    robots: 'noindex, nofollow'
+  });
 
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [authorizedAdmin, setAuthorizedAdmin] = useState<boolean>(false);

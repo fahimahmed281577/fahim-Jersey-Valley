@@ -4,6 +4,7 @@ import { SlidersHorizontal, RotateCcw, Search } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { ProductCard } from '../components/ProductCard';
 import { filterAndSortProducts, formatBdt } from '../lib/commerce';
+import { usePageSeo } from '../lib/seo';
 
 export const CatalogPage: React.FC = () => {
   const { products } = useStore();
@@ -19,6 +20,24 @@ export const CatalogPage: React.FC = () => {
   const sortBy =
     (searchParams.get('sort') as 'featured' | 'newest' | 'price-asc' | 'price-desc') ||
     'featured';
+
+  const seoTitle =
+    category === 'national'
+      ? 'National Team Football Jerseys Bangladesh — Jersey Valley'
+      : category === 'club'
+        ? 'European Club Football Jerseys Bangladesh — Jersey Valley'
+        : category === 'retro'
+          ? 'Heritage Retro Football Jerseys (1999–2007) — Jersey Valley'
+          : query
+            ? `Search "${query}" — Football Jerseys Catalog | Jersey Valley`
+            : 'Shop All Replica Football Jerseys in Bangladesh — Jersey Valley';
+
+  usePageSeo({
+    title: seoTitle,
+    description:
+      'Browse size-verified S–XXL fan replica, player-fit, and retro football jerseys in Bangladesh with BDT pricing and optional custom back printing.',
+    canonicalPath: category !== 'all' ? `/shop?category=${encodeURIComponent(category)}` : '/shop'
+  });
 
   const updateParam = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);

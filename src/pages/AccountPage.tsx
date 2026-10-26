@@ -7,6 +7,7 @@ import {
   formatBdt,
   validateBangladeshPhone
 } from '../lib/commerce';
+import { usePageSeo } from '../lib/seo';
 
 interface CustomerOrderSummary {
   orderNumber: string;
@@ -31,6 +32,16 @@ export const AccountPage: React.FC = () => {
     sendPasswordReset,
     logoutUser
   } = useStore();
+
+  usePageSeo({
+    title: currentUser
+      ? 'Customer Profile & Order History — Jersey Valley'
+      : 'Customer Sign In & Registration — Jersey Valley',
+    description:
+      'Manage your Bangladesh delivery address, saved jerseys, and order history on Jersey Valley.',
+    canonicalPath: '/account',
+    robots: 'noindex, nofollow'
+  });
 
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
   const [nameInput, setNameInput] = useState<string>('');

@@ -106,13 +106,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         </div>
       )}
 
-      {/* Top Bar Contract: Strictly 3 Zones separated by gap-8 */}
+      {/* Top Bar Contract: Strictly 3 Zones separated by gap */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-zinc-200">
-        <div className="max-w-[1280px] mx-auto flex items-center justify-between gap-8 px-4 sm:px-6 py-3.5">
+        <div className="max-w-[1280px] mx-auto flex items-center justify-between gap-3 sm:gap-8 px-4 sm:px-6 py-3.5">
           {/* Zone 1: Single text element wordmark */}
           <Link
             to="/"
-            className="font-display text-2xl font-bold tracking-wider text-[#111111] whitespace-nowrap shrink-0"
+            className="font-display text-xl sm:text-2xl font-bold tracking-wider text-[#111111] whitespace-nowrap shrink-0"
           >
             JERSEY VALLEY
           </Link>
@@ -164,12 +164,12 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               type="button"
               onClick={() => setCartDrawerOpen(true)}
               aria-label={`Open shopping bag (${cartCount} items)`}
-              className="px-4 py-2 bg-[#111111] text-white text-xs font-semibold hover:bg-[#15803D] transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
+              className="px-3 sm:px-4 py-2 bg-[#111111] text-white text-xs font-semibold hover:bg-[#15803D] transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
             >
               <ShoppingBag className="w-3.5 h-3.5" />
               <span>Bag ({cartCount})</span>
               {cartSubtotalBdt > 0 && (
-                <span className="font-mono-num text-zinc-300">
+                <span className="hidden sm:inline font-mono-num text-zinc-300">
                   · {formatBdt(cartSubtotalBdt)}
                 </span>
               )}
@@ -190,11 +190,11 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
       {/* Secondary Storefront Utility Bar (Search, Wishlist, Account, Admin Console) */}
       <div className="bg-[#F7F7F5] border-b border-zinc-200">
-        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-4">
+        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2.5 sm:gap-4">
           <form
             onSubmit={handleSearchSubmit}
             role="search"
-            className="flex items-center flex-1 max-w-md bg-white border border-zinc-300 focus-within:border-[#111111]"
+            className="flex items-center w-full md:w-auto md:flex-1 md:max-w-md bg-white border border-zinc-300 focus-within:border-[#111111]"
           >
             <label htmlFor="global-jersey-search" className="sr-only">
               Search jerseys by team, country, club, or retro year
@@ -205,7 +205,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search Argentina, Bangladesh, Real Madrid, Retro 1999..."
-              className="w-full px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:outline-none"
+              className="w-full px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:outline-none min-w-0"
             />
             <button
               type="submit"
@@ -217,7 +217,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             </button>
           </form>
 
-          <div className="flex items-center gap-5 text-xs font-medium text-zinc-700">
+          <div className="w-full md:w-auto flex items-center justify-between md:justify-end gap-3 sm:gap-5 text-xs font-medium text-zinc-700">
             <Link
               to="/wishlist"
               className="hover:text-[#15803D] flex items-center gap-1.5 whitespace-nowrap shrink-0"
