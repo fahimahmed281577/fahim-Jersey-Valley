@@ -7,7 +7,7 @@ let cachedAppPromise: ReturnType<typeof createJerseyValleyApp> | null = null;
  * Vercel Serverless Function entrypoint for all /api/*, /robots.txt, and /sitemap.xml routes.
  * Preserves all Express routes, input validation, idempotency, and Firebase JWT RBAC middleware.
  */
-export default async function handler(req: IncomingMessage, res: ServerResponse) {
+export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // Normalize req.url on Vercel:
   // When vercel.json rewrites /api/(.*) -> /api/index?path=/api/$1,
   // Vercel sets req.url to /api/index or provides the original path in headers / query params.
@@ -52,5 +52,22 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     cachedAppPromise = createJerseyValleyApp();
   }
   const app = await cachedAppPromise;
-  return app(req, res);
+
+  // Returning a Promise that waits for the response stream to finish flushing guarantees that
+  // Vercel's serverless runtime will not prematurely freeze the execution context while Express
+  // computes bcrypt verification, formats HttpOnly cookies, and streams the JSON response.
+  return new Promise<void>((resolve, reject) => {
+    res.on('finish', () => resolve());
+    res.on('close', () => resolve());
+    res.on('error', (err) => reject(err));
+
+    // Cast req and res as any for Express application handler invocation
+    (app as any)(req, res, (err?: unknown) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
 }

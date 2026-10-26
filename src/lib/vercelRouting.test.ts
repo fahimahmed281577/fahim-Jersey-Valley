@@ -97,5 +97,39 @@ test('Vercel serverless routing: restores req.url from query param path, x-forwa
     assert.ok(notFoundType.includes('application/json'), 'Unmatched route must return JSON, not HTML');
     const notFoundData = await notFoundRes.json();
     assert.equal(notFoundData.error, 'API endpoint not found.');
+
+    // 6. Test invalid password returns JSON 401 with structured error
+    const invalidPassRes = await fetch(`${baseUrl}/api/index?path=/api/admin/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: JSON.stringify({
+        adminId: 'jvadmin',
+        password: 'IncorrectPassword999!'
+      })
+    });
+    assert.equal(invalidPassRes.status, 401, 'Invalid password must return 401');
+    const invalidData = await invalidPassRes.json();
+    assert.equal(invalidData.error, 'Invalid Admin ID or password.');
+
+    // 7. Test quoted env vars handling (e.g. if user pasted quotes into Vercel UI)
+    process.env.ADMIN_LOGIN_ID = '"jvadmin"';
+    process.env.ADMIN_PASSWORD_HASH = `"${bcrypt.hashSync('Fahim@@2007', 10)}"`;
+    process.env.ADMIN_SESSION_SECRET = '"test-session-secret-at-least-32-chars-long-12345"';
+
+    const quotedLoginRes = await fetch(`${baseUrl}/api/index?path=/api/admin/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: JSON.stringify({
+        adminId: 'jvadmin',
+        password: 'Fahim@@2007'
+      })
+    });
+    assert.equal(quotedLoginRes.status, 200, 'Login with quoted env variables must succeed');
   });
 });

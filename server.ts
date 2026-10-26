@@ -81,6 +81,22 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   const requireAdmin = createRequireAdminMiddleware(tokenVerifier);
 
   const app = express();
+
+  // Support pre-parsed bodies from serverless adapters (Vercel / Lambda)
+  app.use((req, _res, next) => {
+    if (typeof req.body === 'string' && req.body.trim().startsWith('{')) {
+      try {
+        req.body = JSON.parse(req.body);
+      } catch {
+        // ignore JSON parse error
+      }
+    }
+    if (req.body !== undefined && req.body !== null && typeof req.body === 'object') {
+      (req as express.Request & { _body?: boolean })._body = true;
+    }
+    next();
+  });
+
   app.use(express.json({ limit: '512kb' }));
 
   // 0a. CORS, credentials, and preflight OPTIONS handler
@@ -554,40 +570,60 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     '/api/admin/auth/login',
     rateLimitMiddleware('admin-login', loginRateLimitMax),
     async (req, res) => {
-      const requestedWith = String(req.headers['x-requested-with'] ?? '').trim();
-      const contentType = String(req.headers['content-type'] ?? '').toLowerCase();
-      if (
-        requestedWith.toLowerCase() !== 'xmlhttprequest' &&
-        !contentType.includes('application/json')
-      ) {
-        return res.status(403).json({
-          error: 'CSRF check failed. Login requests must be sent as JSON with X-Requested-With.'
+      try {
+        const requestedWith = String(req.headers['x-requested-with'] ?? '').trim();
+        const contentType = String(req.headers['content-type'] ?? '').toLowerCase();
+        if (
+          requestedWith.toLowerCase() !== 'xmlhttprequest' &&
+          !contentType.includes('application/json')
+        ) {
+          return res.status(403).json({
+            error: 'CSRF check failed. Login requests must be sent as JSON with X-Requested-With.'
+          });
+        }
+
+        let body = req.body;
+        if (typeof body === 'string' && body.trim().length > 0) {
+          try {
+            body = JSON.parse(body);
+          } catch {
+            body = {};
+          }
+        }
+
+        const { adminId, password } = (body || {}) as { adminId?: unknown; password?: unknown };
+        const verification = await verifyStandaloneAdminCredentials(
+          String(adminId ?? ''),
+          String(password ?? '')
+        );
+
+        if (!verification.ok || !verification.adminId) {
+          return res.status(verification.statusCode).json({
+            error: verification.error || 'Invalid Admin ID or password.'
+          });
+        }
+
+        const { token, payload } = createStandaloneAdminSession(verification.adminId);
+        res.setHeader('Set-Cookie', serializeStandaloneSessionCookie(token));
+        res.setHeader('Cache-Control', 'no-store');
+
+        return res.status(200).json({
+          authenticated: true,
+          authMode: 'standalone',
+          adminId: verification.adminId,
+          csrfToken: payload.csrf,
+          expiresAt: new Date(payload.exp * 1000).toISOString()
+        });
+      } catch (err) {
+        console.error('Administrator Login Error:', err);
+        return res.status(500).json({
+          error:
+            err instanceof Error
+              ? `Server error during administrator login: ${err.message}`
+              : 'Server error during administrator login.',
+          statusCode: 500
         });
       }
-
-      const { adminId, password } = req.body ?? {};
-      const verification = await verifyStandaloneAdminCredentials(
-        String(adminId ?? ''),
-        String(password ?? '')
-      );
-
-      if (!verification.ok || !verification.adminId) {
-        return res.status(verification.statusCode).json({
-          error: verification.error || 'Invalid Admin ID or password.'
-        });
-      }
-
-      const { token, payload } = createStandaloneAdminSession(verification.adminId);
-      res.setHeader('Set-Cookie', serializeStandaloneSessionCookie(token));
-      res.setHeader('Cache-Control', 'no-store');
-
-      return res.status(200).json({
-        authenticated: true,
-        authMode: 'standalone',
-        adminId: verification.adminId,
-        csrfToken: payload.csrf,
-        expiresAt: new Date(payload.exp * 1000).toISOString()
-      });
     }
   );
 

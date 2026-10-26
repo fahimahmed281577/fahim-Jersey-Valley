@@ -320,9 +320,9 @@ const activeStandaloneSessions = new Map<string, StandaloneAdminSessionPayload>(
 export function getStandaloneAdminConfigStatus(
   env: NodeJS.ProcessEnv = process.env
 ): StandaloneAdminConfigStatus {
-  const loginId = (env.ADMIN_LOGIN_ID || '').trim();
-  const passwordHash = (env.ADMIN_PASSWORD_HASH || '').trim();
-  const sessionSecret = (env.ADMIN_SESSION_SECRET || '').trim();
+  const loginId = (env.ADMIN_LOGIN_ID || '').trim().replace(/^["']|["']$/g, '');
+  const passwordHash = (env.ADMIN_PASSWORD_HASH || '').trim().replace(/^["']|["']$/g, '');
+  const sessionSecret = (env.ADMIN_SESSION_SECRET || '').trim().replace(/^["']|["']$/g, '');
 
   const missingVars: string[] = [];
   if (!loginId) missingVars.push('ADMIN_LOGIN_ID');
@@ -401,12 +401,22 @@ export async function verifyStandaloneAdminCredentials(
     };
   }
 
-  const configuredId = (env.ADMIN_LOGIN_ID || '').trim();
-  const configuredHash = (env.ADMIN_PASSWORD_HASH || '').trim();
+  const configuredId = (env.ADMIN_LOGIN_ID || '').trim().replace(/^["']|["']$/g, '');
+  const configuredHash = (env.ADMIN_PASSWORD_HASH || '').trim().replace(/^["']|["']$/g, '');
 
   const idMatches = timingSafeStringMatch(trimmedId, configuredId);
   const hashToCompare = idMatches ? configuredHash : TIMING_GUARD_BCRYPT_HASH;
-  const passwordMatches = await bcrypt.compare(rawPassword, hashToCompare);
+  let passwordMatches = false;
+  try {
+    passwordMatches = await bcrypt.compare(rawPassword, hashToCompare);
+  } catch (err) {
+    console.error('Bcrypt comparison caught error:', err);
+    return {
+      ok: false,
+      statusCode: 401,
+      error: 'Invalid Admin ID or password.'
+    };
+  }
 
   if (!idMatches || !passwordMatches) {
     return {
@@ -468,7 +478,8 @@ export function createStandaloneAdminSession(
   };
 
   const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signature = signStandalonePayload(encodedPayload, (env.ADMIN_SESSION_SECRET || '').trim());
+  const secret = (env.ADMIN_SESSION_SECRET || '').trim().replace(/^["']|["']$/g, '');
+  const signature = signStandalonePayload(encodedPayload, secret);
   const token = `${encodedPayload}.${signature}`;
 
   activeStandaloneSessions.set(jti, payload);
@@ -501,7 +512,8 @@ export function verifyStandaloneAdminSessionToken(
     return null;
   }
 
-  const expectedSig = signStandalonePayload(encodedPayload, (env.ADMIN_SESSION_SECRET || '').trim());
+  const secret = (env.ADMIN_SESSION_SECRET || '').trim().replace(/^["']|["']$/g, '');
+  const expectedSig = signStandalonePayload(encodedPayload, secret);
   const sigBufA = Buffer.from(providedSig, 'utf8');
   const sigBufB = Buffer.from(expectedSig, 'utf8');
   if (sigBufA.length !== sigBufB.length || !crypto.timingSafeEqual(sigBufA, sigBufB)) {
@@ -524,7 +536,7 @@ export function verifyStandaloneAdminSessionToken(
       return null;
     }
 
-    const configuredId = (env.ADMIN_LOGIN_ID || '').trim();
+    const configuredId = (env.ADMIN_LOGIN_ID || '').trim().replace(/^["']|["']$/g, '');
     if (!timingSafeStringMatch(decoded.sub, configuredId)) {
       return null;
     }
