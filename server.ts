@@ -237,88 +237,88 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
 
   // 3. Atomic Server-Side Order Creation API (Concurrency-safe transaction via PersistenceAdapter)
   app.post('/api/orders', rateLimitMiddleware('orders-create'), async (req, res) => {
-    const {
-      idempotencyKey,
-      customerName,
-      customerPhone,
-      customerEmail,
-      division,
-      district,
-      upazila,
-      streetAddress,
-      postalCode,
-      deliveryNotes,
-      paymentMethod,
-      couponCode,
-      items
-    } = req.body ?? {};
-
-    const cleanIdempotencyKey =
-      typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
-    if (
-      cleanIdempotencyKey.length < 8 ||
-      cleanIdempotencyKey.length > 128 ||
-      !/^[a-zA-Z0-9_\-]+$/.test(cleanIdempotencyKey)
-    ) {
-      return res.status(400).json({
-        error:
-          'A valid alphanumeric idempotencyKey (8–128 characters) is required to prevent duplicate orders.'
-      });
-    }
-
-    const { user: verifiedUser, error: tokenError } = await extractVerifiedUser(req, tokenVerifier);
-    if (req.headers.authorization && tokenError) {
-      return res.status(401).json({ error: `Invalid authentication token: ${tokenError}` });
-    }
-
-    const trimmedName = String(customerName ?? '').trim();
-    if (trimmedName.length < 2 || trimmedName.length > 80) {
-      return res.status(400).json({ error: 'Please provide your full name (2–80 characters).' });
-    }
-
-    const phoneValidation = validateBangladeshPhone(String(customerPhone ?? ''));
-    if (!phoneValidation.valid) {
-      return res.status(400).json({ error: phoneValidation.error });
-    }
-
-    const cleanDivision = String(division ?? '').trim();
-    const cleanDistrict = String(district ?? '').trim();
-    const cleanUpazila = String(upazila ?? '').trim();
-    const cleanStreet = String(streetAddress ?? '').trim();
-
-    if (
-      !cleanDivision ||
-      !cleanDistrict ||
-      !cleanUpazila ||
-      cleanStreet.length < 4 ||
-      cleanStreet.length > 200
-    ) {
-      return res.status(400).json({
-        error:
-          'Complete Bangladesh address (Division, District, Upazila/Thana, and Street Address 4–200 chars) is required.'
-      });
-    }
-
-    const divisionEntry = BANGLADESH_DIVISIONS[cleanDivision];
-    if (!divisionEntry) {
-      return res.status(400).json({ error: `Invalid Bangladesh division "${cleanDivision}".` });
-    }
-    const allowedUpazilas = divisionEntry.districts[cleanDistrict];
-    if (!allowedUpazilas) {
-      return res.status(400).json({
-        error: `District "${cleanDistrict}" does not belong to ${cleanDivision} division.`
-      });
-    }
-    if (!allowedUpazilas.includes(cleanUpazila)) {
-      return res.status(400).json({
-        error: `Upazila/Thana "${cleanUpazila}" is not listed under ${cleanDistrict} district.`
-      });
-    }
-
-    const selectedPayment: PaymentMethod =
-      paymentMethod === 'BKASH' || paymentMethod === 'NAGAD' ? paymentMethod : 'COD';
-
     try {
+      const {
+        idempotencyKey,
+        customerName,
+        customerPhone,
+        customerEmail,
+        division,
+        district,
+        upazila,
+        streetAddress,
+        postalCode,
+        deliveryNotes,
+        paymentMethod,
+        couponCode,
+        items
+      } = req.body ?? {};
+
+      const cleanIdempotencyKey =
+        typeof idempotencyKey === 'string' ? idempotencyKey.trim() : '';
+      if (
+        cleanIdempotencyKey.length < 8 ||
+        cleanIdempotencyKey.length > 128 ||
+        !/^[a-zA-Z0-9_\-]+$/.test(cleanIdempotencyKey)
+      ) {
+        return res.status(400).json({
+          error:
+            'A valid alphanumeric idempotencyKey (8–128 characters) is required to prevent duplicate orders.'
+        });
+      }
+
+      const { user: verifiedUser, error: tokenError } = await extractVerifiedUser(req, tokenVerifier);
+      if (req.headers.authorization && tokenError) {
+        return res.status(401).json({ error: `Invalid authentication token: ${tokenError}` });
+      }
+
+      const trimmedName = String(customerName ?? '').trim();
+      if (trimmedName.length < 2 || trimmedName.length > 80) {
+        return res.status(400).json({ error: 'Please provide your full name (2–80 characters).' });
+      }
+
+      const phoneValidation = validateBangladeshPhone(String(customerPhone ?? ''));
+      if (!phoneValidation.valid) {
+        return res.status(400).json({ error: phoneValidation.error });
+      }
+
+      const cleanDivision = String(division ?? '').trim();
+      const cleanDistrict = String(district ?? '').trim();
+      const cleanUpazila = String(upazila ?? '').trim();
+      const cleanStreet = String(streetAddress ?? '').trim();
+
+      if (
+        !cleanDivision ||
+        !cleanDistrict ||
+        !cleanUpazila ||
+        cleanStreet.length < 4 ||
+        cleanStreet.length > 200
+      ) {
+        return res.status(400).json({
+          error:
+            'Complete Bangladesh address (Division, District, Upazila/Thana, and Street Address 4–200 chars) is required.'
+        });
+      }
+
+      const divisionEntry = BANGLADESH_DIVISIONS[cleanDivision];
+      if (!divisionEntry) {
+        return res.status(400).json({ error: `Invalid Bangladesh division "${cleanDivision}".` });
+      }
+      const allowedUpazilas = divisionEntry.districts[cleanDistrict];
+      if (!allowedUpazilas) {
+        return res.status(400).json({
+          error: `District "${cleanDistrict}" does not belong to ${cleanDivision} division.`
+        });
+      }
+      if (!allowedUpazilas.includes(cleanUpazila)) {
+        return res.status(400).json({
+          error: `Upazila/Thana "${cleanUpazila}" is not listed under ${cleanDistrict} district.`
+        });
+      }
+
+      const selectedPayment: PaymentMethod =
+        paymentMethod === 'BKASH' || paymentMethod === 'NAGAD' ? paymentMethod : 'COD';
+
       const { order, duplicatePrevented } = await store.createOrderAtomic({
         idempotencyKey: cleanIdempotencyKey,
         userId: verifiedUser ? verifiedUser.uid : null,
@@ -349,10 +349,32 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         orderAccessToken: order.orderAccessToken
       });
     } catch (err) {
+      console.error('[Jersey Valley Orders API Error]', err);
       if (err instanceof StoreError) {
         return res.status(err.statusCode).json({ error: err.message });
       }
-      return res.status(500).json({ error: 'Order creation failed due to a server error.' });
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const isFirestoreIssue =
+        errMsg.includes('NOT_FOUND') ||
+        errMsg.includes('Database') ||
+        errMsg.includes('permission') ||
+        errMsg.includes('PERMISSION_DENIED') ||
+        errMsg.includes('UNAVAILABLE') ||
+        errMsg.includes('UNAUTHENTICATED') ||
+        errMsg.includes('credentials') ||
+        errMsg.includes('DEADLINE_EXCEEDED');
+
+      if (isFirestoreIssue) {
+        return res.status(503).json({
+          error: `Production database error: Cloud Firestore communication failure (${errMsg}). Verify that project "jerseyvalley-bd" has Cloud Firestore enabled for database "(default)".`,
+          statusCode: 503
+        });
+      }
+
+      return res.status(500).json({
+        error: `Order creation failed: ${errMsg}`,
+        statusCode: 500
+      });
     }
   });
 

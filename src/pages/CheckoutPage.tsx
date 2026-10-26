@@ -226,7 +226,8 @@ export const CheckoutPage: React.FC = () => {
           setSubmitError(data.error);
         } else if (response.status === 503) {
           setSubmitError(
-            'Order processing service is temporarily unavailable (HTTP 503). Cloud Firestore persistence configuration is required.'
+            data?.error ||
+              'Order processing service is temporarily unavailable (HTTP 503). Cloud Firestore persistence configuration is required.'
           );
         } else if (response.status === 502 || response.status === 504) {
           setSubmitError(
@@ -237,6 +238,8 @@ export const CheckoutPage: React.FC = () => {
             data?.error ||
               'Inventory conflict: one or more items in your cart just sold out. Please review your cart.'
           );
+        } else if (responseText && responseText.trim() && !responseText.trim().startsWith('<')) {
+          setSubmitError(`Server error (${response.status}): ${responseText.trim().slice(0, 180)}`);
         } else {
           setSubmitError(
             `Unable to submit order (HTTP ${response.status}). Please review your details and try again.`

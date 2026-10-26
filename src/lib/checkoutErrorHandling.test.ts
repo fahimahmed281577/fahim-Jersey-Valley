@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createJerseyValleyApp } from '../../server';
+import handler from '../../api/index';
 import {
   TransactionalStoreAdapter,
-  UnconfiguredProductionPersistenceAdapter
+  UnconfiguredProductionPersistenceAdapter,
+  parseServiceAccountCredentials,
+  parsePrivateKey
 } from './persistentStore';
 
 async function withServer(
@@ -12,6 +16,29 @@ async function withServer(
   fn: (baseUrl: string) => Promise<void>
 ): Promise<void> {
   const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const address = server.address() as { port: number };
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  try {
+    await fn(baseUrl);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err) => (err ? reject(err) : resolve()))
+    );
+  }
+}
+
+async function withVercelServer(
+  customHandler: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>,
+  fn: (baseUrl: string) => Promise<void>
+): Promise<void> {
+  const server = http.createServer((req, res) => {
+    customHandler(req, res).catch((err) => {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: String(err) }));
+    });
+  });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address() as { port: number };
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -171,5 +198,70 @@ test('Checkout Validation: Rejects invalid phone numbers and missing delivery ad
     assert.equal(badDistrictRes.status, 400);
     const badDistrictBody = await badDistrictRes.json();
     assert.ok(badDistrictBody.error.includes('does not belong to'));
+  });
+});
+
+test('Credential Sanitization: Robustly parses quoted JSON, base64, and escaped private keys', () => {
+  // 1. Service account JSON wrapped in outer quotes
+  const sampleJson = JSON.stringify({
+    project_id: 'jerseyvalley-bd',
+    client_email: 'service-account@jerseyvalley-bd.iam.gserviceaccount.com',
+    private_key: '-----BEGIN PRIVATE KEY-----\\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASC...\\n-----END PRIVATE KEY-----\\n'
+  });
+  const quotedJson = `"${sampleJson}"`;
+  const parsedFromQuoted = parseServiceAccountCredentials(quotedJson);
+  assert.equal(parsedFromQuoted.project_id, 'jerseyvalley-bd');
+  assert.equal(parsedFromQuoted.client_email, 'service-account@jerseyvalley-bd.iam.gserviceaccount.com');
+
+  // 2. Base64-encoded service account JSON
+  const b64Json = Buffer.from(sampleJson, 'utf-8').toString('base64');
+  const parsedFromB64 = parseServiceAccountCredentials(b64Json);
+  assert.equal(parsedFromB64.project_id, 'jerseyvalley-bd');
+
+  // 3. Private key with literal \n and outer quotes
+  const quotedKey = '"-----BEGIN PRIVATE KEY-----\\nLINE1\\nLINE2\\n-----END PRIVATE KEY-----\\n"';
+  const cleanKey = parsePrivateKey(quotedKey);
+  assert.ok(cleanKey.includes('\nLINE1\nLINE2\n'));
+  assert.ok(!cleanKey.startsWith('"'));
+  assert.ok(!cleanKey.endsWith('"'));
+});
+
+test('Vercel Adapter Error Handling: Catches serverless exceptions and guarantees structured JSON', async () => {
+  // Test that simulated database failure returns structured JSON HTTP 503
+  const failingStore: any = {
+    backendType: 'firestore-admin',
+    createOrderAtomic: async () => {
+      throw new Error('5 NOT_FOUND: Database (default) does not exist.');
+    },
+    getCatalogAndSettings: async () => ({
+      products: [],
+      coupons: [],
+      settings: {} as any
+    })
+  };
+
+  const app = await createJerseyValleyApp({ store: failingStore });
+  await withServer(app, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idempotencyKey: `db-fail-${Date.now()}`,
+        customerName: 'Karim Ullah',
+        customerPhone: '01712345678',
+        division: 'Dhaka',
+        district: 'Dhaka',
+        upazila: 'Mirpur',
+        streetAddress: 'House 10, Road 4, Mirpur',
+        paymentMethod: 'COD',
+        items: [{ productId: 'bd-home-2026', size: 'M', quantity: 1 }]
+      })
+    });
+
+    assert.equal(res.status, 503, 'Database NOT_FOUND error must return 503');
+    const body = await res.json();
+    assert.ok(body.error.includes('Production database error'));
+    assert.ok(body.error.includes('jerseyvalley-bd'));
+    assert.ok(body.error.includes('(default)'));
   });
 });

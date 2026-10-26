@@ -1450,35 +1450,40 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
   private async ensureSeeded(): Promise<void> {
     if (!this.seededPromise) {
       this.seededPromise = (async () => {
-        const settingsRef = this.db.collection('siteSettings').doc('global');
-        const settingsSnap = await settingsRef.get();
-        if (!settingsSnap.exists) {
-          await settingsRef.set(withEnvGatewayFlags(structuredClone(INITIAL_SITE_SETTINGS)));
-        }
+        try {
+          const settingsRef = this.db.collection('siteSettings').doc('global');
+          const settingsSnap = await settingsRef.get();
+          if (!settingsSnap.exists) {
+            await settingsRef.set(withEnvGatewayFlags(structuredClone(INITIAL_SITE_SETTINGS)));
+          }
 
-        const firstProductRef = this.db.collection('serverCatalog').doc(INITIAL_CATALOG[0].id);
-        const firstProductSnap = await firstProductRef.get();
-        if (!firstProductSnap.exists) {
-          const batch = this.db.batch();
-          for (const prod of INITIAL_CATALOG) {
-            batch.set(this.db.collection('serverCatalog').doc(prod.id), structuredClone(prod));
-          }
-          for (const coup of INITIAL_COUPONS) {
-            batch.set(this.db.collection('serverCoupons').doc(coup.code), structuredClone(coup));
-          }
-          batch.set(
-            this.db.collection('serverOrders').doc(DEMO_SEED_ORDER.orderNumber),
-            structuredClone(DEMO_SEED_ORDER)
-          );
-          batch.set(
-            this.db.collection('serverIdempotency').doc(DEMO_SEED_ORDER.idempotencyKey),
-            {
-              idempotencyKey: DEMO_SEED_ORDER.idempotencyKey,
-              orderNumber: DEMO_SEED_ORDER.orderNumber,
-              createdAt: DEMO_SEED_ORDER.createdAt
+          const firstProductRef = this.db.collection('serverCatalog').doc(INITIAL_CATALOG[0].id);
+          const firstProductSnap = await firstProductRef.get();
+          if (!firstProductSnap.exists) {
+            const batch = this.db.batch();
+            for (const prod of INITIAL_CATALOG) {
+              batch.set(this.db.collection('serverCatalog').doc(prod.id), structuredClone(prod));
             }
-          );
-          await batch.commit();
+            for (const coup of INITIAL_COUPONS) {
+              batch.set(this.db.collection('serverCoupons').doc(coup.code), structuredClone(coup));
+            }
+            batch.set(
+              this.db.collection('serverOrders').doc(DEMO_SEED_ORDER.orderNumber),
+              structuredClone(DEMO_SEED_ORDER)
+            );
+            batch.set(
+              this.db.collection('serverIdempotency').doc(DEMO_SEED_ORDER.idempotencyKey),
+              {
+                idempotencyKey: DEMO_SEED_ORDER.idempotencyKey,
+                orderNumber: DEMO_SEED_ORDER.orderNumber,
+                createdAt: DEMO_SEED_ORDER.createdAt
+              }
+            );
+            await batch.commit();
+          }
+        } catch (seedErr) {
+          this.seededPromise = null;
+          throw seedErr;
         }
       })();
     }
@@ -2170,6 +2175,27 @@ export interface ProductionPersistenceConfigStatus {
   reason?: string;
 }
 
+export function parseServiceAccountCredentials(raw: string): Record<string, unknown> {
+  const sanitized = raw.trim().replace(/^["']|["']$/g, '').trim();
+  let candidate = sanitized;
+  if (!sanitized.startsWith('{')) {
+    try {
+      const decoded = Buffer.from(sanitized, 'base64').toString('utf-8').trim();
+      if (decoded.startsWith('{')) {
+        candidate = decoded;
+      }
+    } catch {
+      // not base64
+    }
+  }
+  return JSON.parse(candidate) as Record<string, unknown>;
+}
+
+export function parsePrivateKey(raw: string): string {
+  const sanitized = raw.trim().replace(/^["']|["']$/g, '').trim();
+  return sanitized.replace(/\\n/g, '\n');
+}
+
 export function getProductionPersistenceConfigStatus(
   env: NodeJS.ProcessEnv = process.env
 ): ProductionPersistenceConfigStatus {
@@ -2199,10 +2225,7 @@ export function getProductionPersistenceConfigStatus(
     }
   } else if (hasServiceAccountJson) {
     try {
-      const decodedJson = serviceAccountJsonRaw.startsWith('{')
-        ? serviceAccountJsonRaw
-        : Buffer.from(serviceAccountJsonRaw, 'base64').toString('utf-8');
-      const parsed = JSON.parse(decodedJson) as Record<string, unknown>;
+      const parsed = parseServiceAccountCredentials(serviceAccountJsonRaw);
       if (
         typeof parsed.client_email !== 'string' ||
         typeof parsed.private_key !== 'string' ||
@@ -2365,29 +2388,28 @@ export function getFirebaseAdminFirestoreIfConfigured(
     adminApp = existingApps[0]!;
   } else {
     if (serviceAccountJsonRaw) {
-      const decodedJson = serviceAccountJsonRaw.startsWith('{')
-        ? serviceAccountJsonRaw
-        : Buffer.from(serviceAccountJsonRaw, 'base64').toString('utf-8');
-      const parsedCreds = JSON.parse(decodedJson);
+      const parsedCreds = parseServiceAccountCredentials(serviceAccountJsonRaw);
       adminApp = initializeApp({
         credential: cert(parsedCreds),
-        projectId: parsedCreds.project_id || projectId
+        projectId: String(parsedCreds.project_id || projectId || 'jerseyvalley-bd')
       });
     } else {
-      const normalizedPrivateKey = privateKeyRaw.replace(/\\n/g, '\n');
+      const normalizedPrivateKey = parsePrivateKey(privateKeyRaw);
+      const cleanEmail = clientEmail.replace(/^["']|["']$/g, '').trim();
       adminApp = initializeApp({
         credential: cert({
-          projectId,
-          clientEmail,
+          projectId: projectId || 'jerseyvalley-bd',
+          clientEmail: cleanEmail,
           privateKey: normalizedPrivateKey
         }),
-        projectId
+        projectId: projectId || 'jerseyvalley-bd'
       });
     }
   }
 
-  return firestoreDatabaseId && firestoreDatabaseId !== '(default)'
-    ? getFirestore(adminApp, firestoreDatabaseId)
+  const cleanDbId = firestoreDatabaseId.replace(/^["']|["']$/g, '').trim() || '(default)';
+  return cleanDbId && cleanDbId !== '(default)'
+    ? getFirestore(adminApp, cleanDbId)
     : getFirestore(adminApp);
 }
 

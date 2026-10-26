@@ -48,26 +48,58 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   req.url = resolvedUrl;
 
-  if (!cachedAppPromise) {
-    cachedAppPromise = createJerseyValleyApp();
-  }
-  const app = await cachedAppPromise;
+  try {
+    if (!cachedAppPromise) {
+      cachedAppPromise = createJerseyValleyApp();
+    }
+    const app = await cachedAppPromise;
 
-  // Returning a Promise that waits for the response stream to finish flushing guarantees that
-  // Vercel's serverless runtime will not prematurely freeze the execution context while Express
-  // computes bcrypt verification, formats HttpOnly cookies, and streams the JSON response.
-  return new Promise<void>((resolve, reject) => {
-    res.on('finish', () => resolve());
-    res.on('close', () => resolve());
-    res.on('error', (err) => reject(err));
-
-    // Cast req and res as any for Express application handler invocation
-    (app as any)(req, res, (err?: unknown) => {
-      if (err) {
-        reject(err);
-      } else {
+    // Returning a Promise that waits for the response stream to finish flushing guarantees that
+    // Vercel's serverless runtime will not prematurely freeze the execution context while Express
+    // computes bcrypt verification, formats HttpOnly cookies, and streams the JSON response.
+    return await new Promise<void>((resolve) => {
+      res.on('finish', () => resolve());
+      res.on('close', () => resolve());
+      res.on('error', (err) => {
+        console.error('[Vercel Serverless Stream Error]', err);
         resolve();
-      }
+      });
+
+      // Cast req and res as any for Express application handler invocation
+      (app as any)(req, res, (err?: unknown) => {
+        if (err) {
+          console.error('[Vercel Serverless Handler Error]', err);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                error:
+                  err instanceof Error
+                    ? `Server execution error: ${err.message}`
+                    : 'An internal server error occurred.',
+                statusCode: 500
+              })
+            );
+          }
+        }
+        resolve();
+      });
     });
-  });
+  } catch (fatalErr) {
+    console.error('[Vercel Serverless Fatal Initialization Error]', fatalErr);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          error:
+            fatalErr instanceof Error
+              ? `Server initialization error: ${fatalErr.message}`
+              : 'Server initialization failed.',
+          statusCode: 500
+        })
+      );
+    }
+  }
 }
