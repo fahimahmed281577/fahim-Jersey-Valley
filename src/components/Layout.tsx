@@ -9,7 +9,6 @@ import {
   Trash2,
   Plus,
   Minus,
-  ShieldCheck,
   Truck,
   ArrowRight
 } from 'lucide-react';
@@ -173,7 +172,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         </div>
       </header>
 
-      {/* Secondary Storefront Utility Bar (Search, Wishlist, Account, Admin Console) */}
+      {/* Secondary Storefront Utility Bar (Search, Wishlist, Order Tracking) */}
       <div className="bg-[#F7F7F5] border-b border-zinc-200">
         <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2.5 sm:gap-4">
           <form
@@ -217,13 +216,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             >
               <Truck className="w-3.5 h-3.5" />
               <span>Track Order</span>
-            </Link>
-            <Link
-              to="/admin"
-              className="hover:text-[#15803D] flex items-center gap-1 whitespace-nowrap shrink-0 text-zinc-600"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-[#15803D]" />
-              <span>Store Admin</span>
             </Link>
           </div>
         </div>
@@ -274,13 +266,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               className="py-1.5 border-b border-zinc-100"
             >
               Wishlist ({wishlistIds.length})
-            </Link>
-            <Link
-              to="/admin"
-              onClick={() => setMobileMenuOpen(false)}
-              className="py-1.5 text-[#15803D] font-semibold"
-            >
-              Admin Dashboard
             </Link>
           </nav>
         </div>
@@ -610,9 +595,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="flex items-center gap-4">
               <Link to="/track" className="hover:text-zinc-300">
                 Order Tracking
-              </Link>
-              <Link to="/admin" className="hover:text-zinc-300">
-                Admin Console
               </Link>
               <a href="/sitemap.xml" target="_blank" rel="noreferrer" className="hover:text-zinc-300">
                 Sitemap

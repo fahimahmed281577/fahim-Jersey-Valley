@@ -9,6 +9,7 @@
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
+    "admin:credentials": "node scripts/generate-admin-credentials.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
