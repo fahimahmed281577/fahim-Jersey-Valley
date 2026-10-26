@@ -204,16 +204,13 @@ export const JerseyVisualizer: React.FC<JerseyVisualizerProps> = ({
             <rect x="0" y="26" width="400" height="18" fill={visual.secondaryColor} />
           </pattern>
 
-          <filter id={`drop-${uid}`} x="-10%" y="-10%" width="120%" height="125%">
-            <feDropShadow dx="0" dy="10" stdDeviation="9" floodColor="#111111" floodOpacity="0.16" />
-          </filter>
         </defs>
 
         {/* Subtle Studio Plinth Shadow */}
         <ellipse cx="200" cy="316" rx="92" ry="9" fill="rgba(17,17,17,0.1)" />
 
         {/* Main Jersey Silhouette with Pattern */}
-        <g filter={`url(#drop-${uid})`}>
+        <g style={{ filter: 'drop-shadow(0px 10px 9px rgba(17,17,17,0.16))' }}>
           <g clipPath={`url(#shirt-clip-${uid})`}>
             {/* Base Fill */}
             <rect

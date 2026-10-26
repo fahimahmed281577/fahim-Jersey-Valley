@@ -21,14 +21,16 @@ export const ResponsiveImage: React.FC<ResponsiveImageProps> = ({
   fallbackColor = '#F7F7F5',
   onClick
 }) => {
-  const [isLoaded, setIsLoaded] = useState(false);
+  // If priority is true (e.g. hero LCP image), start visible immediately to prevent synthetic LCP delay
+  const [isLoaded, setIsLoaded] = useState(priority);
   const [hasError, setHasError] = useState(false);
 
   const basePath = `/images/products/${productId}`;
   const avifSrcSet = `${basePath}-400w.avif 400w, ${basePath}-800w.avif 800w, ${basePath}-1024w.avif 1024w`;
   const webpSrcSet = `${basePath}-400w.webp 400w, ${basePath}-800w.webp 800w, ${basePath}-1024w.webp 1024w`;
   const jpgSrcSet = `${basePath}-400w.jpg 400w, ${basePath}-800w.jpg 800w, ${basePath}-1024w.jpg 1024w`;
-  const fallbackSrc = `${basePath}.jpg`;
+  // Use appropriately-sized 800w JPEG fallback instead of oversized uncompressed master image
+  const fallbackSrc = `${basePath}-800w.jpg`;
 
   return (
     <div
@@ -36,8 +38,8 @@ export const ResponsiveImage: React.FC<ResponsiveImageProps> = ({
       style={{ backgroundColor: fallbackColor }}
       onClick={onClick}
     >
-      {/* Loading Skeleton / Pulse */}
-      {!isLoaded && !hasError && (
+      {/* Loading Skeleton / Pulse for lazy images */}
+      {!priority && !isLoaded && !hasError && (
         <div className="absolute inset-0 bg-[#EAEAE6] animate-pulse pointer-events-none" />
       )}
 
@@ -49,15 +51,18 @@ export const ResponsiveImage: React.FC<ResponsiveImageProps> = ({
           srcSet={jpgSrcSet}
           sizes={sizes}
           alt={alt}
-          width={1024}
-          height={1024}
+          width={800}
+          height={800}
           loading={priority ? 'eager' : 'lazy'}
           decoding="async"
+          fetchPriority={priority ? 'high' : 'auto'}
           referrerPolicy="no-referrer"
           onLoad={() => setIsLoaded(true)}
           onError={() => setHasError(true)}
-          className={`w-full h-full object-cover transition-opacity duration-300 ${
-            isLoaded ? 'opacity-100' : 'opacity-0'
+          className={`w-full h-full object-cover ${
+            priority
+              ? 'opacity-100'
+              : `transition-opacity duration-300 ${isLoaded ? 'opacity-100' : 'opacity-0'}`
           } ${imageClassName}`}
         />
       </picture>

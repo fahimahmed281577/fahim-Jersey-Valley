@@ -1,0 +1,8 @@
+# https://jerseyvalley.com.bd/robots.txt
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /checkout
+Disallow: /api/
+
+Sitemap: https://jerseyvalley.com.bd/sitemap.xml

@@ -197,6 +197,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       const { products, coupons, settings } = await store.getCatalogAndSettings({
         includeAllCoupons: false
       });
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
       return res.json({
         products: products.filter((p) => p.isActive),
         coupons,

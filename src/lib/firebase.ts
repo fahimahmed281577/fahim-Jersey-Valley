@@ -104,7 +104,18 @@ export function initFirebaseAnalytics(): Promise<Analytics | null> {
   return analyticsInitPromise;
 }
 
-export const analyticsPromise: Promise<Analytics | null> = initFirebaseAnalytics();
+export const analyticsPromise: Promise<Analytics | null> =
+  typeof window !== 'undefined'
+    ? new Promise((resolve) => {
+        const schedule =
+          'requestIdleCallback' in window
+            ? (window as unknown as { requestIdleCallback: (cb: () => void) => void }).requestIdleCallback
+            : (cb: () => void) => setTimeout(cb, 1200);
+        schedule(() => {
+          initFirebaseAnalytics().then(resolve).catch(() => resolve(null));
+        });
+      })
+    : Promise.resolve(null);
 
 /**
  * Uploads a product image file to Firebase Storage under `products/{productId}/`
@@ -186,18 +197,3 @@ export function handleFirestoreError(
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
-
-async function testConnection() {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-
-void testConnection();

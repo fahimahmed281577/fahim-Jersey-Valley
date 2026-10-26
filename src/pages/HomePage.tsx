@@ -105,7 +105,9 @@ export const HomePage: React.FC = () => {
   const [canHoverPointer, setCanHoverPointer] = useState<boolean>(false);
   const heroParallaxRef = useRef<HTMLDivElement | null>(null);
   const heroRafRef = useRef<number | null>(null);
+  const heroRectRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
   const cursorFollowerRef = useRef<HTMLDivElement | null>(null);
+  const cursorRafRef = useRef<number | null>(null);
   const [cursorBadge, setCursorBadge] = useState<{ visible: boolean; label: string }>({
     visible: false,
     label: 'EXPLORE'
@@ -122,12 +124,20 @@ export const HomePage: React.FC = () => {
     const updatePointerCapability = () => {
       setCanHoverPointer(mql.matches && !shouldReduceMotion);
     };
+    const handleResize = () => {
+      heroRectRef.current = null;
+    };
     updatePointerCapability();
     mql.addEventListener?.('change', updatePointerCapability);
+    window.addEventListener('resize', handleResize, { passive: true });
     return () => {
       mql.removeEventListener?.('change', updatePointerCapability);
+      window.removeEventListener('resize', handleResize);
       if (heroRafRef.current !== null) {
         cancelAnimationFrame(heroRafRef.current);
+      }
+      if (cursorRafRef.current !== null) {
+        cancelAnimationFrame(cursorRafRef.current);
       }
     };
   }, [shouldReduceMotion]);
@@ -312,9 +322,19 @@ export const HomePage: React.FC = () => {
     [activeCatalog]
   );
 
+  const handleHeroPointerEnter = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canHoverPointer || shouldReduceMotion) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    heroRectRef.current = { left: r.left, top: r.top, width: r.width, height: r.height };
+  };
+
   const handleHeroPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!canHoverPointer || shouldReduceMotion || !heroParallaxRef.current) return;
-    const rect = e.currentTarget.getBoundingClientRect();
+    if (!heroRectRef.current) {
+      const r = e.currentTarget.getBoundingClientRect();
+      heroRectRef.current = { left: r.left, top: r.top, width: r.width, height: r.height };
+    }
+    const rect = heroRectRef.current;
     if (!rect.width || !rect.height) return;
     const normX = (e.clientX - rect.left) / rect.width - 0.5;
     const normY = (e.clientY - rect.top) / rect.height - 0.5;
@@ -332,6 +352,7 @@ export const HomePage: React.FC = () => {
   };
 
   const handleHeroPointerLeave = () => {
+    heroRectRef.current = null;
     if (heroRafRef.current !== null) {
       cancelAnimationFrame(heroRafRef.current);
       heroRafRef.current = null;
@@ -346,15 +367,26 @@ export const HomePage: React.FC = () => {
     label: string
   ) => {
     if (!canHoverPointer || shouldReduceMotion) return;
-    if (cursorFollowerRef.current) {
-      cursorFollowerRef.current.style.transform = `translate3d(${e.clientX + 16}px, ${e.clientY + 16}px, 0)`;
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+    if (cursorRafRef.current !== null) {
+      cancelAnimationFrame(cursorRafRef.current);
     }
+    cursorRafRef.current = requestAnimationFrame(() => {
+      if (cursorFollowerRef.current) {
+        cursorFollowerRef.current.style.transform = `translate3d(${clientX + 16}px, ${clientY + 16}px, 0)`;
+      }
+    });
     setCursorBadge((prev) =>
       prev.visible && prev.label === label ? prev : { visible: true, label }
     );
   };
 
   const handleScopedCursorLeave = () => {
+    if (cursorRafRef.current !== null) {
+      cancelAnimationFrame(cursorRafRef.current);
+      cursorRafRef.current = null;
+    }
     setCursorBadge((prev) => (prev.visible ? { ...prev, visible: false } : prev));
   };
 
@@ -413,6 +445,7 @@ export const HomePage: React.FC = () => {
           SECTION 1: CINEMATIC ANIMATED HERO
           ===================================================================== */}
       <section
+        onPointerEnter={handleHeroPointerEnter}
         onPointerMove={handleHeroPointerMove}
         onPointerLeave={handleHeroPointerLeave}
         className="relative bg-[#111111] text-white border-b border-zinc-800 overflow-hidden"
@@ -595,7 +628,7 @@ export const HomePage: React.FC = () => {
                               productId={currentHeroProduct.id}
                               alt={currentHeroProduct.name}
                               priority={true}
-                              sizes="(max-width: 1024px) 100vw, 40vw"
+                              sizes="(max-width: 640px) 94vw, (max-width: 1024px) 85vw, 520px"
                               className="w-full h-full"
                               fallbackColor={currentHeroProduct.visual?.secondaryColor || '#F7F7F5'}
                             />
