@@ -285,15 +285,28 @@ export const AdminDashboardPage: React.FC = () => {
         headers: baseHeaders
       });
       setAuthStatusCode(res.status);
-      const data = await res.json();
+
+      let data: any = null;
+      try {
+        const rawText = await res.text();
+        if (rawText && rawText.trim().length > 0) {
+          data = JSON.parse(rawText);
+        }
+      } catch {
+        // Non-JSON response
+      }
 
       if (!res.ok) {
         setAuthorizedAdmin(false);
         setAuthErrorMessage(
-          data.error ||
+          data?.error ||
             (res.status === 401
               ? 'Administrator authentication required. Sign in below with your Standalone Admin ID and password.'
-              : 'Administrator privileges required.')
+              : res.status === 404
+              ? 'Admin overview endpoint not found (HTTP 404). Check server deployment.'
+              : res.status === 503
+              ? (data?.error || 'Database persistence not configured (HTTP 503).')
+              : `Administrator access error (HTTP ${res.status}).`)
         );
         return;
       }
@@ -353,23 +366,70 @@ export const AdminDashboardPage: React.FC = () => {
           password: loginPassword
         })
       });
-      const data = await res.json();
+
+      let data: any = null;
+      try {
+        const rawText = await res.text();
+        if (rawText && rawText.trim().length > 0) {
+          data = JSON.parse(rawText);
+        }
+      } catch {
+        // Non-JSON response (e.g. HTML 404/500/502)
+      }
+
       if (!res.ok) {
-        setLoginError(data.error || 'Invalid Admin ID or password.');
+        if (data && typeof data.error === 'string') {
+          setLoginError(data.error);
+        } else if (res.status === 401) {
+          setLoginError('Invalid Admin ID or password.');
+        } else if (res.status === 404) {
+          setLoginError('Administrator login endpoint not found (HTTP 404). Check API deployment.');
+        } else if (res.status === 503) {
+          setLoginError(
+            'Standalone admin credentials are not configured on the server (HTTP 503). Ensure ADMIN_LOGIN_ID, ADMIN_PASSWORD_HASH, and ADMIN_SESSION_SECRET are set in Vercel Environment Variables.'
+          );
+        } else if (res.status === 429) {
+          setLoginError('Too many login attempts. Please wait a moment before trying again (HTTP 429).');
+        } else if (res.status >= 500) {
+          setLoginError(`Server error during administrator login (HTTP ${res.status}).`);
+        } else {
+          setLoginError(`Login failed with HTTP status ${res.status}.`);
+        }
+        return;
+      }
+
+      if (!data || !data.authenticated) {
+        setLoginError('Unexpected response from administrator authentication endpoint.');
         return;
       }
 
       setLoginPassword('');
       setShowPassword(false);
-      if (data.csrfToken) {
+      if (typeof data.csrfToken === 'string') {
         setCsrfToken(data.csrfToken);
       }
       setAdminSessionMode('standalone');
-      setAdminActorId(data.adminId || 'jvadmin');
-      pushToast(`Signed in as standalone administrator (${data.adminId || 'jvadmin'})`, 'success');
-      await loadAdminOverview();
-    } catch {
-      setLoginError('Network error while attempting administrator login.');
+      const resolvedAdminId = typeof data.adminId === 'string' ? data.adminId : 'jvadmin';
+      setAdminActorId(resolvedAdminId);
+      pushToast(`Signed in as standalone administrator (${resolvedAdminId})`, 'success');
+
+      try {
+        await loadAdminOverview();
+      } catch (overviewErr) {
+        console.warn('Overview fetch error after standalone login:', overviewErr);
+      }
+    } catch (err) {
+      if (err instanceof TypeError && err.message.toLowerCase().includes('failed to fetch')) {
+        setLoginError(
+          'Network connection error: Unable to reach the server. Please verify your internet connection or deployment status.'
+        );
+      } else {
+        setLoginError(
+          err instanceof Error
+            ? `Login error: ${err.message}`
+            : 'Network error while attempting administrator login.'
+        );
+      }
     } finally {
       setLoggingIn(false);
     }

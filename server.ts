@@ -83,6 +83,48 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   const app = express();
   app.use(express.json({ limit: '512kb' }));
 
+  // 0a. CORS, credentials, and preflight OPTIONS handler
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+      );
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-Requested-With, X-CSRF-Token, x-order-access-token, cache-control'
+      );
+    }
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
+  // 0b. URL prefix normalizer for Vercel/proxied routing
+  app.use((req, _res, next) => {
+    if (
+      !req.url.startsWith('/api') &&
+      !req.url.startsWith('/robots.txt') &&
+      !req.url.startsWith('/sitemap.xml')
+    ) {
+      if (
+        req.url.startsWith('/admin') ||
+        req.url.startsWith('/catalog') ||
+        req.url.startsWith('/orders') ||
+        req.url.startsWith('/checkout') ||
+        req.url.startsWith('/auth')
+      ) {
+        req.url = `/api${req.url}`;
+      }
+    }
+    next();
+  });
+
   // Sliding-window rate limiter for API mutation & lookup endpoints
   const rateBuckets = new Map<string, number[]>();
   function rateLimitMiddleware(bucketPrefix: string, maxRequests = rateLimitMax) {
@@ -968,6 +1010,32 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
 </urlset>`;
     res.type('application/xml').send(xml);
   });
+
+  // 404 handler for unmatched /api/* endpoints (guarantee JSON, never HTML)
+  app.use('/api', (_req, res) => {
+    res.status(404).json({
+      error: 'API endpoint not found.',
+      statusCode: 404
+    });
+  });
+
+  // Global JSON error handler
+  app.use(
+    (
+      err: unknown,
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction
+    ) => {
+      console.error('API Error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: 'An internal server error occurred.',
+          statusCode: 500
+        });
+      }
+    }
+  );
 
   return app;
 }

@@ -8,6 +8,46 @@ let cachedAppPromise: ReturnType<typeof createJerseyValleyApp> | null = null;
  * Preserves all Express routes, input validation, idempotency, and Firebase JWT RBAC middleware.
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
+  // Normalize req.url on Vercel:
+  // When vercel.json rewrites /api/(.*) -> /api/index?path=/api/$1,
+  // Vercel sets req.url to /api/index or provides the original path in headers / query params.
+  const rawUrl = req.url || '';
+  let resolvedUrl = rawUrl;
+
+  const xForwardedUri = req.headers['x-forwarded-uri'] as string | undefined;
+  const xMatchedPath = req.headers['x-matched-path'] as string | undefined;
+  const xVercelMatched = req.headers['x-vercel-matched-path'] as string | undefined;
+
+  const candidateHeader = xForwardedUri || xMatchedPath || xVercelMatched;
+  if (
+    candidateHeader &&
+    (rawUrl === '/api/index' || rawUrl === '/api/index/' || rawUrl.startsWith('/api/index?'))
+  ) {
+    resolvedUrl = candidateHeader;
+  } else if (rawUrl.startsWith('/api/index?')) {
+    try {
+      const parsed = new URL(rawUrl, 'http://localhost');
+      const routeParam = parsed.searchParams.get('path') || parsed.searchParams.get('route');
+      if (routeParam) {
+        resolvedUrl = routeParam.startsWith('/') ? routeParam : `/${routeParam}`;
+      }
+    } catch {
+      // ignore URL parsing failure
+    }
+  }
+
+  // Ensure resolvedUrl starts with /api if it's an API route (e.g. if Vercel stripped /api):
+  if (
+    resolvedUrl &&
+    !resolvedUrl.startsWith('/api') &&
+    !resolvedUrl.startsWith('/robots.txt') &&
+    !resolvedUrl.startsWith('/sitemap.xml')
+  ) {
+    resolvedUrl = `/api${resolvedUrl.startsWith('/') ? '' : '/'}${resolvedUrl}`;
+  }
+
+  req.url = resolvedUrl;
+
   if (!cachedAppPromise) {
     cachedAppPromise = createJerseyValleyApp();
   }

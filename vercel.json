@@ -6,15 +6,15 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/index"
+      "destination": "/api/index?path=/api/$1"
     },
     {
       "source": "/robots.txt",
-      "destination": "/api/index"
+      "destination": "/api/index?path=/robots.txt"
     },
     {
       "source": "/sitemap.xml",
-      "destination": "/api/index"
+      "destination": "/api/index?path=/sitemap.xml"
     },
     {
       "source": "/((?!api/|assets/|robots\\.txt|sitemap\\.xml|.*\\..*).*)",
