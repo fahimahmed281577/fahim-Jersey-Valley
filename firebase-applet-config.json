@@ -1,12 +1,10 @@
 {
-  "projectId": "circular-valve-x3kqt",
-  "appId": "1:711108477472:web:e72be3aed1fcf7d0373245",
-  "apiKey": "AIzaSyBg0YIJ0DMedih3HbHUr78YyWun4oRQs2w",
-  "authDomain": "circular-valve-x3kqt.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-jerseyvalleyfoot-e1da97d7-8072-4f35-96cb-8232f6c69bd4",
-  "storageBucket": "circular-valve-x3kqt.firebasestorage.app",
-  "messagingSenderId": "711108477472",
-  "measurementId": "",
-  "oAuthClientId": "711108477472-kgolcegldvte6r541efd5q3qsgtjq19r.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "apiKey": "AIzaSyAEGjQmQ6M9E9iG5IX468_U86xLQJkGXid8",
+  "authDomain": "jerseyvalley-bd.firebaseapp.com",
+  "projectId": "jerseyvalley-bd",
+  "storageBucket": "jerseyvalley-bd.firebasestorage.app",
+  "messagingSenderId": "591799865718",
+  "appId": "1:591799865718:web:fd6a5f1757ea6453beea57",
+  "measurementId": "G-8062XMJBFJ",
+  "firestoreDatabaseId": "(default)"
 }

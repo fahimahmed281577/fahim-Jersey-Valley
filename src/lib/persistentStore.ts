@@ -172,7 +172,7 @@ export type SiteSettingsPatch = Partial<
 >;
 
 export interface PersistenceAdapter {
-  readonly backendType: 'firestore-admin' | 'transactional-store';
+  readonly backendType: 'firestore-admin' | 'transactional-store' | 'unconfigured-production';
   getCatalogAndSettings(options?: {
     includeAllCoupons?: boolean;
   }): Promise<{
@@ -2123,7 +2123,9 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
   }
 }
 
-function loadProjectAndDbConfig(): { projectId: string; firestoreDatabaseId: string } {
+export function loadProjectAndDbConfig(
+  env: NodeJS.ProcessEnv = process.env
+): { projectId: string; firestoreDatabaseId: string } {
   let fileConfig: { projectId?: string; firestoreDatabaseId?: string } = {};
   try {
     const raw = fs.readFileSync(
@@ -2136,16 +2138,207 @@ function loadProjectAndDbConfig(): { projectId: string; firestoreDatabaseId: str
   }
   return {
     projectId:
-      process.env.FIREBASE_PROJECT_ID ||
-      process.env.VITE_FIREBASE_PROJECT_ID ||
+      (env.FIREBASE_PROJECT_ID || '').trim() ||
+      (env.VITE_FIREBASE_PROJECT_ID || '').trim() ||
       fileConfig.projectId ||
       '',
     firestoreDatabaseId:
-      process.env.FIREBASE_FIRESTORE_DATABASE_ID ||
-      process.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
+      (env.FIREBASE_FIRESTORE_DATABASE_ID || '').trim() ||
+      (env.FIREBASE_DATABASE_ID || '').trim() ||
+      (env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || '').trim() ||
+      (env.VITE_FIREBASE_DATABASE_ID || '').trim() ||
       fileConfig.firestoreDatabaseId ||
       '(default)'
   };
+}
+
+export function isProductionServerEnvironment(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const nodeEnv = (env.NODE_ENV || '').trim().toLowerCase();
+  const vercelEnv = (env.VERCEL_ENV || '').trim().toLowerCase();
+  const vercelFlag = (env.VERCEL || '').trim();
+  return nodeEnv === 'production' || vercelEnv === 'production' || vercelFlag === '1';
+}
+
+export interface ProductionPersistenceConfigStatus {
+  isProduction: boolean;
+  configured: boolean;
+  projectId: string;
+  firestoreDatabaseId: string;
+  missingVars: string[];
+  reason?: string;
+}
+
+export function getProductionPersistenceConfigStatus(
+  env: NodeJS.ProcessEnv = process.env
+): ProductionPersistenceConfigStatus {
+  const { projectId, firestoreDatabaseId } = loadProjectAndDbConfig(env);
+  const isProduction = isProductionServerEnvironment(env);
+  const serviceAccountJsonRaw = (env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  const clientEmail = (env.FIREBASE_CLIENT_EMAIL || '').trim();
+  const privateKeyRaw = (env.FIREBASE_PRIVATE_KEY || '').trim();
+
+  const missingVars: string[] = [];
+  if (!projectId) {
+    missingVars.push('FIREBASE_PROJECT_ID');
+  }
+
+  const hasServiceAccountJson = Boolean(serviceAccountJsonRaw);
+  const hasSplitCredentials = Boolean(clientEmail && privateKeyRaw);
+
+  if (!hasServiceAccountJson && !hasSplitCredentials) {
+    if (clientEmail && !privateKeyRaw) {
+      missingVars.push('FIREBASE_PRIVATE_KEY');
+    } else if (!clientEmail && privateKeyRaw) {
+      missingVars.push('FIREBASE_CLIENT_EMAIL');
+    } else {
+      missingVars.push(
+        'FIREBASE_SERVICE_ACCOUNT_JSON (or FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY)'
+      );
+    }
+  } else if (hasServiceAccountJson) {
+    try {
+      const decodedJson = serviceAccountJsonRaw.startsWith('{')
+        ? serviceAccountJsonRaw
+        : Buffer.from(serviceAccountJsonRaw, 'base64').toString('utf-8');
+      const parsed = JSON.parse(decodedJson) as Record<string, unknown>;
+      if (
+        typeof parsed.client_email !== 'string' ||
+        typeof parsed.private_key !== 'string' ||
+        !parsed.client_email.trim() ||
+        !parsed.private_key.trim()
+      ) {
+        return {
+          isProduction,
+          configured: false,
+          projectId,
+          firestoreDatabaseId,
+          missingVars: ['FIREBASE_SERVICE_ACCOUNT_JSON'],
+          reason:
+            'Production persistence configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing required "client_email" or "private_key" fields. Silent fallback to in-memory or local storage is disabled in production.'
+        };
+      }
+    } catch {
+      return {
+        isProduction,
+        configured: false,
+        projectId,
+        firestoreDatabaseId,
+        missingVars: ['FIREBASE_SERVICE_ACCOUNT_JSON'],
+        reason:
+          'Production persistence configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON or base64-encoded JSON. Silent fallback to in-memory or local storage is disabled in production.'
+      };
+    }
+  }
+
+  if (missingVars.length > 0) {
+    return {
+      isProduction,
+      configured: false,
+      projectId,
+      firestoreDatabaseId,
+      missingVars,
+      reason: `Production persistence configuration error: Cloud Firestore Admin credentials are required in production (${missingVars.join(', ')}). Configure FIREBASE_SERVICE_ACCOUNT_JSON (or FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY) and FIREBASE_FIRESTORE_DATABASE_ID (or FIREBASE_DATABASE_ID) in server environment variables. Silent fallback to in-memory or local storage is disabled in production.`
+    };
+  }
+
+  return {
+    isProduction,
+    configured: true,
+    projectId,
+    firestoreDatabaseId,
+    missingVars: []
+  };
+}
+
+/**
+ * Fail-closed adapter used ONLY when running in production (`NODE_ENV=production` or `VERCEL=1`)
+ * without valid Firebase Admin SDK credentials. Guarantees that production never silently
+ * falls back to ephemeral in-memory or local disk storage, and instead returns a clear HTTP 503
+ * server configuration error on any persistence operation.
+ */
+export class UnconfiguredProductionPersistenceAdapter implements PersistenceAdapter {
+  public readonly backendType = 'unconfigured-production' as const;
+  private readonly errorMessage: string;
+
+  constructor(errorMessage?: string) {
+    this.errorMessage =
+      errorMessage ||
+      'Production persistence configuration error: Cloud Firestore Admin credentials are required in production (set FIREBASE_SERVICE_ACCOUNT_JSON, or FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY, along with FIREBASE_FIRESTORE_DATABASE_ID / FIREBASE_DATABASE_ID). Silent fallback to in-memory or local storage is disabled in production.';
+  }
+
+  private failClosed(): never {
+    throw new StoreError(503, this.errorMessage);
+  }
+
+  async getCatalogAndSettings(): Promise<{
+    products: Product[];
+    coupons: CouponDefinition[];
+    settings: SiteSettingsConfig;
+  }> {
+    return this.failClosed();
+  }
+
+  async getOrderByNumber(): Promise<StoredOrder | null> {
+    return this.failClosed();
+  }
+
+  async listCustomerOrders(): Promise<StoredOrder[]> {
+    return this.failClosed();
+  }
+
+  async listAllOrders(): Promise<StoredOrder[]> {
+    return this.failClosed();
+  }
+
+  async createOrderAtomic(): Promise<{ order: StoredOrder; duplicatePrevented: boolean }> {
+    return this.failClosed();
+  }
+
+  async cancelOrderAtomic(): Promise<StoredOrder> {
+    return this.failClosed();
+  }
+
+  async updateOrderStatusAtomic(): Promise<StoredOrder> {
+    return this.failClosed();
+  }
+
+  async updateVariantStockAtomic(): Promise<Product> {
+    return this.failClosed();
+  }
+
+  async createProductAtomic(): Promise<Product> {
+    return this.failClosed();
+  }
+
+  async updateProductAtomic(): Promise<Product> {
+    return this.failClosed();
+  }
+
+  async setProductArchiveStateAtomic(): Promise<Product> {
+    return this.failClosed();
+  }
+
+  async listStockAdjustmentLogs(): Promise<StockAdjustmentLog[]> {
+    return this.failClosed();
+  }
+
+  async upsertCouponAtomic(): Promise<CouponDefinition> {
+    return this.failClosed();
+  }
+
+  async deleteCouponAtomic(): Promise<void> {
+    return this.failClosed();
+  }
+
+  async listCustomerDirectory(): Promise<CustomerDirectoryRecord[]> {
+    return this.failClosed();
+  }
+
+  async updateSiteSettingsAtomic(): Promise<SiteSettingsConfig> {
+    return this.failClosed();
+  }
 }
 
 /**
@@ -2153,17 +2346,18 @@ function loadProjectAndDbConfig(): { projectId: string; firestoreDatabaseId: str
  * (`FIREBASE_SERVICE_ACCOUNT_JSON` or `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`)
  * are configured in server environment variables. Never exposes secrets to client code.
  */
-export function getFirebaseAdminFirestoreIfConfigured(): Firestore | null {
-  const { projectId, firestoreDatabaseId } = loadProjectAndDbConfig();
-  if (!projectId) return null;
-
-  const serviceAccountJsonRaw = (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
-  const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || '').trim();
-  const privateKeyRaw = (process.env.FIREBASE_PRIVATE_KEY || '').trim();
-
-  if (!serviceAccountJsonRaw && (!clientEmail || !privateKeyRaw)) {
+export function getFirebaseAdminFirestoreIfConfigured(
+  env: NodeJS.ProcessEnv = process.env
+): Firestore | null {
+  const status = getProductionPersistenceConfigStatus(env);
+  if (!status.configured) {
     return null;
   }
+
+  const { projectId, firestoreDatabaseId } = status;
+  const serviceAccountJsonRaw = (env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  const clientEmail = (env.FIREBASE_CLIENT_EMAIL || '').trim();
+  const privateKeyRaw = (env.FIREBASE_PRIVATE_KEY || '').trim();
 
   let adminApp: AdminApp;
   const existingApps = getApps();
@@ -2197,18 +2391,48 @@ export function getFirebaseAdminFirestoreIfConfigured(): Firestore | null {
     : getFirestore(adminApp);
 }
 
+/**
+ * Resolves the appropriate PersistenceAdapter for the given environment:
+ * 1. If Firebase Admin SDK credentials are configured -> `FirestoreAdminPersistenceAdapter`
+ * 2. If running in production (`NODE_ENV=production`, `VERCEL=1`, or `VERCEL_ENV=production`)
+ *    and Firebase Admin credentials are missing/invalid -> `UnconfiguredProductionPersistenceAdapter`
+ *    (fails closed with HTTP 503 StoreError; NEVER falls back to in-memory or local storage).
+ * 3. Only in non-production local development/test -> `TransactionalStoreAdapter`.
+ */
+export function resolvePersistenceAdapterForEnv(
+  env: NodeJS.ProcessEnv = process.env
+): PersistenceAdapter {
+  const configStatus = getProductionPersistenceConfigStatus(env);
+  if (configStatus.configured) {
+    try {
+      const adminDb = getFirebaseAdminFirestoreIfConfigured(env);
+      if (adminDb) {
+        return new FirestoreAdminPersistenceAdapter(adminDb);
+      }
+    } catch (err) {
+      if (configStatus.isProduction) {
+        return new UnconfiguredProductionPersistenceAdapter(
+          `Production persistence configuration error: Failed to initialize Firebase Admin SDK (${err instanceof Error ? err.message : 'invalid credentials'}). Silent fallback to in-memory storage is disabled in production.`
+        );
+      }
+    }
+  }
+
+  if (configStatus.isProduction) {
+    return new UnconfiguredProductionPersistenceAdapter(configStatus.reason);
+  }
+
+  return new TransactionalStoreAdapter({
+    snapshotFilePath: env.PERSISTENT_STORE_FILE_PATH || undefined
+  });
+}
+
 let defaultStoreInstance: PersistenceAdapter | null = null;
 
 export function getDefaultPersistenceAdapter(): PersistenceAdapter {
   if (!defaultStoreInstance) {
-    const adminDb = getFirebaseAdminFirestoreIfConfigured();
-    if (adminDb) {
-      defaultStoreInstance = new FirestoreAdminPersistenceAdapter(adminDb);
-    } else {
-      defaultStoreInstance = new TransactionalStoreAdapter({
-        snapshotFilePath: process.env.PERSISTENT_STORE_FILE_PATH || undefined
-      });
-    }
+    defaultStoreInstance = resolvePersistenceAdapterForEnv(process.env);
   }
   return defaultStoreInstance;
 }
+

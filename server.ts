@@ -144,7 +144,10 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         coupons,
         settings
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof StoreError) {
+        return res.status(err.statusCode).json({ error: err.message });
+      }
       return res.status(500).json({ error: 'Unable to load storefront catalog.' });
     }
   });
@@ -166,7 +169,10 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         district
       });
       return res.json(result);
-    } catch {
+    } catch (err) {
+      if (err instanceof StoreError) {
+        return res.status(err.statusCode).json({ error: err.message });
+      }
       return res.status(500).json({ error: 'Unable to calculate order totals.' });
     }
   });
@@ -359,7 +365,10 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       }
 
       return res.json({ order: sanitizeOrderForClient(found) });
-    } catch {
+    } catch (err) {
+      if (err instanceof StoreError) {
+        return res.status(err.statusCode).json({ error: err.message });
+      }
       return res.status(500).json({ error: 'Unable to retrieve order.' });
     }
   });
@@ -378,7 +387,10 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     try {
       const matching = await store.listCustomerOrders(user.uid);
       return res.json({ orders: matching.map(sanitizeOrderForClient) });
-    } catch {
+    } catch (err) {
+      if (err instanceof StoreError) {
+        return res.status(err.statusCode).json({ error: err.message });
+      }
       return res.status(500).json({ error: 'Unable to load customer order history.' });
     }
   });
@@ -685,7 +697,10 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
           customers,
           settings
         });
-      } catch {
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
         return res.status(500).json({ error: 'Unable to load admin overview.' });
       }
     }
@@ -700,7 +715,10 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
       try {
         const customers = await store.listCustomerDirectory();
         return res.json({ customers });
-      } catch {
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
         return res.status(500).json({ error: 'Unable to load customer directory.' });
       }
     }
@@ -916,14 +934,19 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
 
   app.get('/sitemap.xml', async (req, res) => {
     const baseUrl = resolvePublicBaseUrl(req);
-    const { products } = await store.getCatalogAndSettings();
-    const productUrls = products
-      .filter((p) => p.isActive)
-      .map(
-        (p) =>
-          `  <url>\n    <loc>${baseUrl}/product/${p.slug}</loc>\n    <lastmod>${p.updatedAt.split('T')[0]}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>`
-      )
-      .join('\n');
+    let productUrls = '';
+    try {
+      const { products } = await store.getCatalogAndSettings();
+      productUrls = products
+        .filter((p) => p.isActive)
+        .map(
+          (p) =>
+            `  <url>\n    <loc>${baseUrl}/product/${p.slug}</loc>\n    <lastmod>${p.updatedAt.split('T')[0]}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>`
+        )
+        .join('\n');
+    } catch {
+      // If production persistence is unconfigured, still serve core route sitemap entries
+    }
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -941,8 +964,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     <loc>${baseUrl}/track</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
-  </url>
-${productUrls}
+  </url>${productUrls ? `\n${productUrls}` : ''}
 </urlset>`;
     res.type('application/xml').send(xml);
   });

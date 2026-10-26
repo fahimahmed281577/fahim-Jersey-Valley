@@ -815,3 +815,96 @@ test('Admin Panel RBAC & Cold-Start Persistence: 401 unauthenticated, 403 non-ad
   }
 });
 
+test('Production persistence fails closed with HTTP 503 when Firebase Admin credentials are missing and supports both FIREBASE_FIRESTORE_DATABASE_ID and FIREBASE_DATABASE_ID', async () => {
+  const {
+    loadProjectAndDbConfig,
+    resolvePersistenceAdapterForEnv,
+    UnconfiguredProductionPersistenceAdapter
+  } = await import('./persistentStore');
+  const { loadFirebaseServerConfig } = await import('./serverAuth');
+
+  // 1. Verify FIREBASE_FIRESTORE_DATABASE_ID and FIREBASE_DATABASE_ID alias resolution
+  const cfgWithFirestoreVar = loadProjectAndDbConfig({
+    FIREBASE_PROJECT_ID: 'proj-a',
+    FIREBASE_FIRESTORE_DATABASE_ID: 'db-from-firestore-var'
+  });
+  assert.equal(cfgWithFirestoreVar.projectId, 'proj-a');
+  assert.equal(cfgWithFirestoreVar.firestoreDatabaseId, 'db-from-firestore-var');
+
+  const cfgWithDatabaseIdVar = loadProjectAndDbConfig({
+    FIREBASE_PROJECT_ID: 'proj-b',
+    FIREBASE_DATABASE_ID: 'db-from-database-id-var'
+  });
+  assert.equal(cfgWithDatabaseIdVar.projectId, 'proj-b');
+  assert.equal(cfgWithDatabaseIdVar.firestoreDatabaseId, 'db-from-database-id-var');
+
+  const authCfgWithDatabaseIdVar = loadFirebaseServerConfig({
+    FIREBASE_PROJECT_ID: 'proj-b',
+    FIREBASE_DATABASE_ID: 'db-from-database-id-var'
+  });
+  assert.equal(authCfgWithDatabaseIdVar.firestoreDatabaseId, 'db-from-database-id-var');
+
+  // 2. Verify default fallback resolves to jerseyvalley-bd and (default) database
+  const defaultCfg = loadProjectAndDbConfig({});
+  assert.equal(defaultCfg.projectId, 'jerseyvalley-bd');
+  assert.equal(defaultCfg.firestoreDatabaseId, '(default)');
+
+  // 3. Verify Firebase Web SDK module (src/lib/firebase.ts) singleton initialization & safe Analytics in Node
+  const firebaseClient = await import('./firebase');
+  const { terminate } = await import('firebase/firestore');
+  assert.equal(firebaseClient.resolvedFirebaseConfig.projectId, 'jerseyvalley-bd');
+  assert.equal(firebaseClient.resolvedFirebaseConfig.authDomain, 'jerseyvalley-bd.firebaseapp.com');
+  assert.equal(firebaseClient.resolvedFirebaseConfig.storageBucket, 'jerseyvalley-bd.firebasestorage.app');
+  assert.equal(firebaseClient.resolvedFirebaseConfig.messagingSenderId, '591799865718');
+  assert.equal(firebaseClient.resolvedFirebaseConfig.appId, '1:591799865718:web:fd6a5f1757ea6453beea57');
+  assert.equal(firebaseClient.resolvedFirebaseConfig.measurementId, 'G-8062XMJBFJ');
+  assert.ok(firebaseClient.app, 'Firebase app singleton must be exported');
+  assert.ok(firebaseClient.auth, 'Firebase Auth instance must be exported');
+  assert.ok(firebaseClient.db, 'Firestore instance must be exported');
+  assert.ok(firebaseClient.storage, 'Firebase Storage instance must be exported');
+  const analyticsResult = await firebaseClient.initFirebaseAnalytics();
+  assert.equal(analyticsResult, null, 'Firebase Analytics must safely return null in non-browser environment');
+  await terminate(firebaseClient.db).catch(() => undefined);
+
+  // 4. Verify production environment without Firebase Admin credentials does NOT silently fall back to in-memory storage
+  const prodStoreMissingCreds = resolvePersistenceAdapterForEnv({
+    NODE_ENV: 'production',
+    VERCEL: '1',
+    FIREBASE_PROJECT_ID: 'jerseyvalley-bd',
+    FIREBASE_DATABASE_ID: '(default)'
+  });
+  assert.equal(prodStoreMissingCreds.backendType, 'unconfigured-production');
+  assert.ok(prodStoreMissingCreds instanceof UnconfiguredProductionPersistenceAdapter);
+
+  const app = await createJerseyValleyApp({ store: prodStoreMissingCreds });
+  await withServer(app, async (baseUrl) => {
+    const catalogRes = await fetch(`${baseUrl}/api/catalog`);
+    assert.equal(catalogRes.status, 503);
+    const catalogErr = (await catalogRes.json()) as { error: string };
+    assert.match(catalogErr.error, /Cloud Firestore Admin credentials are required in production/i);
+
+    const orderRes = await fetch(`${baseUrl}/api/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idempotencyKey: 'prod-unconfigured-order-test-001',
+        customerName: 'Test Customer',
+        customerPhone: '01712345678',
+        customerEmail: 'test@example.com',
+        division: 'Dhaka',
+        district: 'Dhaka',
+        upazila: 'Dhanmondi',
+        streetAddress: 'House 10, Road 4, Dhanmondi',
+        postalCode: '1209',
+        deliveryNotes: '',
+        paymentMethod: 'COD',
+        items: [{ productId: 'arg-home-2026', size: 'L', quantity: 1 }]
+      })
+    });
+    assert.equal(orderRes.status, 503);
+    const orderErr = (await orderRes.json()) as { error: string };
+    assert.match(orderErr.error, /Silent fallback to in-memory or local storage is disabled in production/i);
+  });
+});
+
+

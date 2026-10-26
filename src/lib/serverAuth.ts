@@ -9,7 +9,9 @@ interface FirebaseAppletConfig {
   firestoreDatabaseId?: string;
 }
 
-function loadFirebaseServerConfig(): FirebaseAppletConfig {
+export function loadFirebaseServerConfig(
+  env: NodeJS.ProcessEnv = process.env
+): FirebaseAppletConfig {
   let fileConfig: Partial<FirebaseAppletConfig> = {};
   try {
     const raw = fs.readFileSync(
@@ -23,13 +25,15 @@ function loadFirebaseServerConfig(): FirebaseAppletConfig {
 
   return {
     projectId:
-      process.env.FIREBASE_PROJECT_ID ||
-      process.env.VITE_FIREBASE_PROJECT_ID ||
+      (env.FIREBASE_PROJECT_ID || '').trim() ||
+      (env.VITE_FIREBASE_PROJECT_ID || '').trim() ||
       fileConfig.projectId ||
       '',
     firestoreDatabaseId:
-      process.env.FIREBASE_FIRESTORE_DATABASE_ID ||
-      process.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
+      (env.FIREBASE_FIRESTORE_DATABASE_ID || '').trim() ||
+      (env.FIREBASE_DATABASE_ID || '').trim() ||
+      (env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || '').trim() ||
+      (env.VITE_FIREBASE_DATABASE_ID || '').trim() ||
       fileConfig.firestoreDatabaseId ||
       '(default)'
   };
@@ -224,11 +228,12 @@ export async function checkIsServerAdmin(
   }
 
   // Check Firestore /admins/{uid} document using the user's verified ID token
-  if (rawIdToken && serverFirebaseConfig.projectId && serverFirebaseConfig.firestoreDatabaseId) {
+  const activeConfig = loadFirebaseServerConfig();
+  if (rawIdToken && activeConfig.projectId && activeConfig.firestoreDatabaseId) {
     try {
-      const dbId = encodeURIComponent(serverFirebaseConfig.firestoreDatabaseId);
+      const dbId = encodeURIComponent(activeConfig.firestoreDatabaseId);
       const uid = encodeURIComponent(user.uid);
-      const url = `https://firestore.googleapis.com/v1/projects/${serverFirebaseConfig.projectId}/databases/${dbId}/documents/admins/${uid}`;
+      const url = `https://firestore.googleapis.com/v1/projects/${activeConfig.projectId}/databases/${dbId}/documents/admins/${uid}`;
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${rawIdToken}`

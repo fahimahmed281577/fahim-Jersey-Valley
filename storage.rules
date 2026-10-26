@@ -1,0 +1,61 @@
+rules_version = '2';
+
+// ============================================================================
+// JERSEY VALLEY — FIREBASE STORAGE SECURITY RULES (jerseyvalley-bd)
+// ============================================================================
+// Protects product photography uploaded to `jerseyvalley-bd.firebasestorage.app`
+// under `products/{productId}/{fileName}`.
+// - Public read access is allowed ONLY for storefront product images under `/products/**`.
+// - Write (upload/replace) and delete access are strictly restricted to authenticated,
+//   email-verified administrators (verified via custom token claim `admin == true` or
+//   existence of `/admins/{uid}` in Cloud Firestore), with strict image content-type
+//   and 5 MB file-size validation.
+// - All other Storage paths are denied by default.
+// ============================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true && (
+          request.auth.token.admin == true ||
+          firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid))
+        );
+    }
+
+    function isValidProductId(productId) {
+      return productId is string &&
+        productId.size() >= 1 &&
+        productId.size() <= 128 &&
+        productId.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidImageUpload() {
+      return request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('^image/(jpeg|png|webp|avif|gif)$');
+    }
+
+    // Global default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // Storefront Product Photography: /products/{productId}/{fileName}
+    match /products/{productId}/{fileName} {
+      allow get, list: if isValidProductId(productId);
+      allow create, update: if isVerifiedAdmin() &&
+        isValidProductId(productId) &&
+        fileName.size() >= 1 &&
+        fileName.size() <= 160 &&
+        isValidImageUpload();
+      allow delete: if isVerifiedAdmin() && isValidProductId(productId);
+    }
+  }
+}
