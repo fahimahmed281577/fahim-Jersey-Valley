@@ -224,3 +224,50 @@ test('Standalone Admin session cookie lifecycle enforces HMAC signature, CSRF he
   assert.equal(afterRevoke, null);
 });
 
+test('Standalone Admin session revocation and credential check handle enclosing quotes and $-escaped bcrypt hashes', async () => {
+  const bcrypt = await import('bcryptjs');
+  const {
+    createStandaloneAdminSession,
+    verifyStandaloneAdminSessionToken,
+    revokeStandaloneAdminSession,
+    verifyStandaloneAdminCredentials
+  } = await import('./serverAuth');
+
+  const rawHash = await bcrypt.default.hash('Fahim@@2007', 10);
+  const escapedHashWithQuotes = `"${rawHash.replace(/\$/g, '\\$')}"`;
+
+  const quotedEnv: NodeJS.ProcessEnv = {
+    NODE_ENV: 'production',
+    ADMIN_LOGIN_ID: '"jvadmin"',
+    ADMIN_PASSWORD_HASH: escapedHashWithQuotes,
+    ADMIN_SESSION_SECRET: '"quoted-super-secret-32-character-session-key-987654"'
+  };
+
+  const { token } = createStandaloneAdminSession('jvadmin', {
+    env: quotedEnv,
+    nowSeconds: 1760000000
+  });
+
+  const verifiedBefore = verifyStandaloneAdminSessionToken(token, {
+    env: quotedEnv,
+    nowSeconds: 1760000050
+  });
+  assert.ok(verifiedBefore);
+  assert.equal(verifiedBefore.sub, 'jvadmin');
+
+  // Revoke with quoted secret in env
+  revokeStandaloneAdminSession(token, quotedEnv);
+  const verifiedAfter = verifyStandaloneAdminSessionToken(token, {
+    env: quotedEnv,
+    nowSeconds: 1760000050
+  });
+  assert.equal(verifiedAfter, null, 'Quoted ADMIN_SESSION_SECRET must properly revoke session');
+
+  const credCheck = await verifyStandaloneAdminCredentials('jvadmin', 'Fahim@@2007', quotedEnv);
+  assert.equal(credCheck.ok, true, 'Escaped/quoted bcrypt hash must verify valid password');
+
+  const wrongCheck = await verifyStandaloneAdminCredentials('jvadmin', 'WrongPass123', quotedEnv);
+  assert.equal(wrongCheck.ok, false, 'Wrong password must be rejected');
+});
+
+

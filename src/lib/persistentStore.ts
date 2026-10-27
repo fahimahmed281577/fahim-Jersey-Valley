@@ -969,16 +969,10 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         }
       }
 
-      if (input.paymentMethod === 'BKASH' && !this.settings.bkashMerchantEnabled) {
+      if (input.paymentMethod && input.paymentMethod !== 'COD') {
         throw new StoreError(
           400,
-          'bKash Tokenized Checkout merchant credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to place your order now.'
-        );
-      }
-      if (input.paymentMethod === 'NAGAD' && !this.settings.nagadMerchantEnabled) {
-        throw new StoreError(
-          400,
-          'Nagad Merchant PGW credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to place your order now.'
+          'Only Cash on Delivery (COD) is available for checkout. Online payment gateways (bKash / Nagad) are disabled.'
         );
       }
 
@@ -1026,8 +1020,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
       }
       const orderNumber = `JV-2610-${randomSuffix}`;
       const orderAccessToken = crypto.randomBytes(16).toString('hex');
-      const initialPaymentStatus: PaymentStatus =
-        input.paymentMethod === 'COD' ? 'UNPAID_COD' : 'PENDING_VERIFICATION';
+      const initialPaymentStatus: PaymentStatus = 'UNPAID_COD';
 
       const newOrder: StoredOrder = {
         id: `ord-${Date.now()}-${randomSuffix.toLowerCase()}`,
@@ -1045,7 +1038,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
         streetAddress: input.streetAddress,
         postalCode: input.postalCode,
         deliveryNotes: input.deliveryNotes,
-        paymentMethod: input.paymentMethod,
+        paymentMethod: 'COD',
         paymentStatus: initialPaymentStatus,
         orderStatus: 'PENDING_CONFIRMATION',
         items: calculation.items,
@@ -1064,10 +1057,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
             status: 'PENDING_CONFIRMATION',
             paymentStatus: initialPaymentStatus,
             timestamp: nowIso,
-            note:
-              input.paymentMethod === 'COD'
-                ? 'Order placed via Cash on Delivery. Payment remains UNPAID until doorstep delivery.'
-                : `Order placed via ${input.paymentMethod}. Awaiting server-side gateway verification.`
+            note: 'Order placed via Cash on Delivery. Payment remains UNPAID until doorstep delivery.'
           }
         ]
       };
@@ -1438,6 +1428,22 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
  * Uses Firestore multi-document transactions (`db.runTransaction`) to atomically persist
  * orders, idempotency locks, catalog products, variant inventory, stock logs, coupons, and settings.
  */
+export function sanitizeForFirestore<T>(value: T): T {
+  if (value === null || value === undefined || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v !== undefined) {
+      clean[k] = sanitizeForFirestore(v);
+    }
+  }
+  return clean as T;
+}
+
 export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
   public readonly backendType = 'firestore-admin' as const;
   private readonly db: Firestore;
@@ -1454,7 +1460,9 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
           const settingsRef = this.db.collection('siteSettings').doc('global');
           const settingsSnap = await settingsRef.get();
           if (!settingsSnap.exists) {
-            await settingsRef.set(withEnvGatewayFlags(structuredClone(INITIAL_SITE_SETTINGS)));
+            await settingsRef.set(
+              sanitizeForFirestore(withEnvGatewayFlags(structuredClone(INITIAL_SITE_SETTINGS)))
+            );
           }
 
           const firstProductRef = this.db.collection('serverCatalog').doc(INITIAL_CATALOG[0].id);
@@ -1462,14 +1470,20 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
           if (!firstProductSnap.exists) {
             const batch = this.db.batch();
             for (const prod of INITIAL_CATALOG) {
-              batch.set(this.db.collection('serverCatalog').doc(prod.id), structuredClone(prod));
+              batch.set(
+                this.db.collection('serverCatalog').doc(prod.id),
+                sanitizeForFirestore(structuredClone(prod))
+              );
             }
             for (const coup of INITIAL_COUPONS) {
-              batch.set(this.db.collection('serverCoupons').doc(coup.code), structuredClone(coup));
+              batch.set(
+                this.db.collection('serverCoupons').doc(coup.code),
+                sanitizeForFirestore(structuredClone(coup))
+              );
             }
             batch.set(
               this.db.collection('serverOrders').doc(DEMO_SEED_ORDER.orderNumber),
-              structuredClone(DEMO_SEED_ORDER)
+              sanitizeForFirestore(structuredClone(DEMO_SEED_ORDER))
             );
             batch.set(
               this.db.collection('serverIdempotency').doc(DEMO_SEED_ORDER.idempotencyKey),
@@ -1591,16 +1605,10 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
           : structuredClone(INITIAL_SITE_SETTINGS)
       );
 
-      if (input.paymentMethod === 'BKASH' && !settings.bkashMerchantEnabled) {
+      if (input.paymentMethod && input.paymentMethod !== 'COD') {
         throw new StoreError(
           400,
-          'bKash Tokenized Checkout merchant credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to place your order now.'
-        );
-      }
-      if (input.paymentMethod === 'NAGAD' && !settings.nagadMerchantEnabled) {
-        throw new StoreError(
-          400,
-          'Nagad Merchant PGW credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to place your order now.'
+          'Only Cash on Delivery (COD) is available for checkout. Online payment gateways (bKash / Nagad) are disabled.'
         );
       }
 
@@ -1671,8 +1679,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
       }
 
       const orderAccessToken = crypto.randomBytes(16).toString('hex');
-      const initialPaymentStatus: PaymentStatus =
-        input.paymentMethod === 'COD' ? 'UNPAID_COD' : 'PENDING_VERIFICATION';
+      const initialPaymentStatus: PaymentStatus = 'UNPAID_COD';
 
       const newOrder: StoredOrder = {
         id: `ord-${Date.now()}-${randomSuffix.toLowerCase()}`,
@@ -1690,7 +1697,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         streetAddress: input.streetAddress,
         postalCode: input.postalCode,
         deliveryNotes: input.deliveryNotes,
-        paymentMethod: input.paymentMethod,
+        paymentMethod: 'COD',
         paymentStatus: initialPaymentStatus,
         orderStatus: 'PENDING_CONFIRMATION',
         items: calculation.items,
@@ -1709,18 +1716,18 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
             status: 'PENDING_CONFIRMATION',
             paymentStatus: initialPaymentStatus,
             timestamp: nowIso,
-            note:
-              input.paymentMethod === 'COD'
-                ? 'Order placed via Cash on Delivery. Payment remains UNPAID until doorstep delivery.'
-                : `Order placed via ${input.paymentMethod}. Awaiting server-side gateway verification.`
+            note: 'Order placed via Cash on Delivery. Payment remains UNPAID until doorstep delivery.'
           }
         ]
       };
 
       for (const updatedProd of lockedCatalog) {
-        tx.set(this.db.collection('serverCatalog').doc(updatedProd.id), updatedProd);
+        tx.set(
+          this.db.collection('serverCatalog').doc(updatedProd.id),
+          sanitizeForFirestore(updatedProd)
+        );
       }
-      tx.set(orderRef, newOrder);
+      tx.set(orderRef, sanitizeForFirestore(newOrder));
       tx.set(idemRef, {
         idempotencyKey: input.idempotencyKey,
         orderNumber,
@@ -2001,10 +2008,10 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
     return this.db.runTransaction(async (tx: Transaction) => {
       const prodRef = this.db.collection('serverCatalog').doc(newProduct.id);
       const snap = await tx.get(prodRef);
-      if (snap.exists) {
+      if ( snap.exists) {
         throw new StoreError(409, `Product "${newProduct.id}" already exists.`);
       }
-      tx.set(prodRef, newProduct);
+      tx.set(prodRef, sanitizeForFirestore(newProduct));
       return newProduct;
     });
   }
@@ -2036,7 +2043,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         },
         existing
       );
-      tx.set(prodRef, updated);
+      tx.set(prodRef, sanitizeForFirestore(updated));
       return updated;
     });
   }
@@ -2052,7 +2059,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
       const existing = structuredClone(snap.data() as Product);
       existing.isActive = Boolean(isActive);
       existing.updatedAt = new Date().toISOString();
-      tx.set(prodRef, existing);
+      tx.set(prodRef, sanitizeForFirestore(existing));
       return existing;
     });
   }
@@ -2071,7 +2078,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
     const validated = validateCouponInput(couponInput);
     return this.db.runTransaction(async (tx: Transaction) => {
       const coupRef = this.db.collection('serverCoupons').doc(validated.code);
-      tx.set(coupRef, validated);
+      tx.set(coupRef, sanitizeForFirestore(validated));
       return validated;
     });
   }
@@ -2089,7 +2096,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         ...(snap.data() as CouponDefinition),
         isActive: false
       };
-      tx.set(coupRef, deactivated);
+      tx.set(coupRef, sanitizeForFirestore(deactivated));
     });
   }
 
@@ -2122,7 +2129,7 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
         : structuredClone(INITIAL_SITE_SETTINGS);
 
       const finalSettings = applySiteSettingsPatch(currentSettings, patch);
-      tx.set(settingsRef, finalSettings);
+      tx.set(settingsRef, sanitizeForFirestore(finalSettings));
       return finalSettings;
     });
   }
@@ -2369,6 +2376,8 @@ export class UnconfiguredProductionPersistenceAdapter implements PersistenceAdap
  * (`FIREBASE_SERVICE_ACCOUNT_JSON` or `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`)
  * are configured in server environment variables. Never exposes secrets to client code.
  */
+const configuredFirestoreInstances = new WeakSet<Firestore>();
+
 export function getFirebaseAdminFirestoreIfConfigured(
   env: NodeJS.ProcessEnv = process.env
 ): Firestore | null {
@@ -2408,9 +2417,21 @@ export function getFirebaseAdminFirestoreIfConfigured(
   }
 
   const cleanDbId = firestoreDatabaseId.replace(/^["']|["']$/g, '').trim() || '(default)';
-  return cleanDbId && cleanDbId !== '(default)'
-    ? getFirestore(adminApp, cleanDbId)
-    : getFirestore(adminApp);
+  const db =
+    cleanDbId && cleanDbId !== '(default)'
+      ? getFirestore(adminApp, cleanDbId)
+      : getFirestore(adminApp);
+
+  if (!configuredFirestoreInstances.has(db)) {
+    configuredFirestoreInstances.add(db);
+    try {
+      db.settings({ ignoreUndefinedProperties: true });
+    } catch {
+      // Ignore if Firestore settings were already frozen on a warm serverless instance
+    }
+  }
+
+  return db;
 }
 
 /**

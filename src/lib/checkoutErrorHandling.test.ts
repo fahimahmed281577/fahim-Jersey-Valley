@@ -265,3 +265,77 @@ test('Vercel Adapter Error Handling: Catches serverless exceptions and guarantee
     assert.ok(body.error.includes('(default)'));
   });
 });
+
+test('COD-Only Enforcement: Rejects BKASH and NAGAD payment methods with HTTP 400 and defaults omitted paymentMethod to COD', async () => {
+  const store = new TransactionalStoreAdapter();
+  const app = await createJerseyValleyApp({ store });
+
+  await withServer(app, async (baseUrl) => {
+    for (const disallowedMethod of ['BKASH', 'NAGAD']) {
+      const res = await fetch(`${baseUrl}/api/orders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idempotencyKey: `disallow-${disallowedMethod}-${Date.now()}`,
+          customerName: 'Tanvir Ahmed',
+          customerPhone: '01711223344',
+          division: 'Dhaka',
+          district: 'Dhaka',
+          upazila: 'Dhanmondi',
+          streetAddress: 'House 8, Road 5, Dhanmondi',
+          paymentMethod: disallowedMethod,
+          items: [{ productId: 'bd-home-2026', size: 'M', quantity: 1 }]
+        })
+      });
+
+      assert.equal(res.status, 400, `${disallowedMethod} must be rejected with HTTP 400`);
+      const body = await res.json();
+      assert.match(body.error, /Only Cash on Delivery \(COD\) is available/i);
+    }
+
+    // Omitted paymentMethod defaults cleanly to COD + UNPAID_COD
+    const codRes = await fetch(`${baseUrl}/api/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idempotencyKey: `default-cod-${Date.now()}`,
+        customerName: 'Tanvir Ahmed',
+        customerPhone: '01711223344',
+        division: 'Dhaka',
+        district: 'Dhaka',
+        upazila: 'Dhanmondi',
+        streetAddress: 'House 8, Road 5, Dhanmondi',
+        items: [{ productId: 'bd-home-2026', size: 'M', quantity: 1 }]
+      })
+    });
+    assert.equal(codRes.status, 201);
+    const codData = await codRes.json();
+    assert.equal(codData.order.paymentMethod, 'COD');
+    assert.equal(codData.order.paymentStatus, 'UNPAID_COD');
+  });
+});
+
+test('Firestore Payload Sanitization: sanitizeForFirestore recursively removes undefined fields while preserving null and valid values', async () => {
+  const { sanitizeForFirestore } = await import('./persistentStore');
+  const rawPayload = {
+    id: 'prod-1',
+    salePriceBdt: undefined,
+    appliedCouponCode: null,
+    nested: {
+      keep: 1350,
+      omitMe: undefined
+    },
+    items: [
+      { sku: 'JV-1', note: undefined, qty: 2 }
+    ]
+  };
+
+  const sanitized = sanitizeForFirestore(rawPayload);
+  assert.equal('salePriceBdt' in sanitized, false);
+  assert.equal(sanitized.appliedCouponCode, null);
+  assert.equal('omitMe' in sanitized.nested, false);
+  assert.equal(sanitized.nested.keep, 1350);
+  assert.equal('note' in sanitized.items[0], false);
+  assert.equal(sanitized.items[0].qty, 2);
+});
+

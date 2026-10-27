@@ -63,7 +63,7 @@ export const CheckoutPage: React.FC = () => {
 
   const [couponInput, setCouponInput] = useState<string>('');
   const [appliedCoupon, setAppliedCoupon] = useState<string>('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('COD');
+  const paymentMethod: PaymentMethod = 'COD';
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [idempotencyKey] = useState<string>(
@@ -140,20 +140,6 @@ export const CheckoutPage: React.FC = () => {
 
     if (streetAddress.trim().length < 4) {
       setSubmitError('Please enter your detailed house/road/area address.');
-      return;
-    }
-
-    if (paymentMethod === 'BKASH' && !settings.bkashMerchantEnabled) {
-      setSubmitError(
-        'bKash online merchant API credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to complete your order.'
-      );
-      return;
-    }
-
-    if (paymentMethod === 'NAGAD' && !settings.nagadMerchantEnabled) {
-      setSubmitError(
-        'Nagad merchant API credentials are not yet configured in environment secrets. Please select Cash on Delivery (COD) to complete your order.'
-      );
       return;
     }
 
@@ -551,122 +537,42 @@ export const CheckoutPage: React.FC = () => {
             </label>
           </section>
 
-          {/* Step 2: Payment Method Selection */}
+          {/* Step 2: Payment Method (Cash on Delivery Only) */}
           <section className="bg-white border border-zinc-200 p-6 space-y-4">
             <div className="border-b border-zinc-100 pb-3">
               <h2 className="font-display text-xl font-bold uppercase text-zinc-900">
                 02. Payment Method
               </h2>
               <p className="text-xs text-zinc-500">
-                Choose Cash on Delivery (active production workflow) or inspect bKash / Nagad gateway status.
+                All Jersey Valley orders across Bangladesh are fulfilled via Cash on Delivery (COD).
               </p>
             </div>
 
-            <div className="space-y-3" role="radiogroup" aria-label="Payment method">
-              {/* Option 1: Cash on Delivery */}
-              <label
-                className={`block p-4 border cursor-pointer transition-colors ${
-                  paymentMethod === 'COD'
-                    ? 'border-[#15803D] bg-emerald-50/40'
-                    : 'border-zinc-200 hover:border-zinc-400'
-                }`}
-              >
+            <div role="radiogroup" aria-label="Payment method">
+              <label className="block p-4 border border-[#15803D] bg-emerald-50/40 cursor-default">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3">
                     <input
                       type="radio"
                       name="paymentMethod"
                       value="COD"
-                      checked={paymentMethod === 'COD'}
-                      onChange={() => {
-                        setPaymentMethod('COD');
-                        setSubmitError(null);
-                      }}
+                      checked={true}
+                      readOnly
                       className="mt-1 accent-[#15803D]"
                     />
                     <div>
                       <span className="text-sm font-bold text-zinc-900 block">
                         Cash on Delivery (COD) — Nationwide Bangladesh
                       </span>
-                      <span className="text-xs text-zinc-600 block mt-0.5">
-                        Pay <strong className="font-mono-num">{formatBdt(calculation.totalBdt)}</strong> in cash when the courier delivers your jersey. Order status starts as{' '}
-                        <code className="text-[11px] bg-zinc-200 px-1">PENDING_CONFIRMATION</code> and payment status remains{' '}
-                        <code className="text-[11px] bg-zinc-200 px-1">UNPAID_COD</code> until collected.
+                      <span className="text-xs text-zinc-600 block mt-0.5 leading-relaxed">
+                        Pay <strong className="font-mono-num">{formatBdt(calculation.totalBdt)}</strong> in cash upon doorstep delivery anywhere in Bangladesh. No online advance payment is required. Your order starts as{' '}
+                        <code className="text-[11px] bg-zinc-200 px-1">PENDING_CONFIRMATION</code> with payment status{' '}
+                        <code className="text-[11px] bg-zinc-200 px-1">UNPAID_COD</code> until collected by the courier.
                       </span>
                     </div>
                   </div>
                   <span className="text-[11px] font-semibold text-[#15803D] whitespace-nowrap">
-                    Active Workflow
-                  </span>
-                </div>
-              </label>
-
-              {/* Option 2: bKash */}
-              <label
-                className={`block p-4 border cursor-pointer transition-colors ${
-                  paymentMethod === 'BKASH'
-                    ? 'border-[#111111] bg-zinc-50'
-                    : 'border-zinc-200 hover:border-zinc-400'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="radio"
-                      name="paymentMethod"
-                      value="BKASH"
-                      checked={paymentMethod === 'BKASH'}
-                      onChange={() => setPaymentMethod('BKASH')}
-                      className="mt-1 accent-[#111111]"
-                    />
-                    <div>
-                      <span className="text-sm font-bold text-zinc-900 block">
-                        bKash Merchant Tokenized Checkout
-                      </span>
-                      <span className="text-xs text-zinc-600 block mt-0.5">
-                        {settings.bkashMerchantEnabled
-                          ? 'Redirect to official bKash PGW for tokenized payment verification.'
-                          : 'Integration interface ready. Live bKash Merchant API keys (BKASH_APP_KEY / BKASH_APP_SECRET) are not yet configured in environment secrets — fake payment confirmations are strictly disabled.'}
-                      </span>
-                    </div>
-                  </div>
-                  <span className="text-[11px] font-medium text-zinc-500 whitespace-nowrap">
-                    {settings.bkashMerchantEnabled ? 'Live' : 'Pending Merchant Keys'}
-                  </span>
-                </div>
-              </label>
-
-              {/* Option 3: Nagad */}
-              <label
-                className={`block p-4 border cursor-pointer transition-colors ${
-                  paymentMethod === 'NAGAD'
-                    ? 'border-[#111111] bg-zinc-50'
-                    : 'border-zinc-200 hover:border-zinc-400'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="radio"
-                      name="paymentMethod"
-                      value="NAGAD"
-                      checked={paymentMethod === 'NAGAD'}
-                      onChange={() => setPaymentMethod('NAGAD')}
-                      className="mt-1 accent-[#111111]"
-                    />
-                    <div>
-                      <span className="text-sm font-bold text-zinc-900 block">
-                        Nagad Merchant Payment Gateway
-                      </span>
-                      <span className="text-xs text-zinc-600 block mt-0.5">
-                        {settings.nagadMerchantEnabled
-                          ? 'Redirect to official Nagad PGW for cryptographic signature verification.'
-                          : 'Integration interface ready. Live Nagad Merchant PGW keys (NAGAD_MERCHANT_ID / NAGAD_PG_PUBLIC_KEY) are not yet configured — fake payment confirmations are strictly disabled.'}
-                      </span>
-                    </div>
-                  </div>
-                  <span className="text-[11px] font-medium text-zinc-500 whitespace-nowrap">
-                    {settings.nagadMerchantEnabled ? 'Live' : 'Pending Merchant Keys'}
+                    Selected Default
                   </span>
                 </div>
               </label>
@@ -833,9 +739,7 @@ export const CheckoutPage: React.FC = () => {
               <span>
                 {isSubmitting
                   ? 'Verifying Stock & Placing Order...'
-                  : paymentMethod === 'COD'
-                    ? `Place Cash on Delivery Order — ${formatBdt(calculation.totalBdt)}`
-                    : `Proceed with ${paymentMethod} — ${formatBdt(calculation.totalBdt)}`}
+                  : `Place Cash on Delivery Order — ${formatBdt(calculation.totalBdt)}`}
               </span>
             </button>
 

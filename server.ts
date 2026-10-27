@@ -317,8 +317,19 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         });
       }
 
-      const selectedPayment: PaymentMethod =
-        paymentMethod === 'BKASH' || paymentMethod === 'NAGAD' ? paymentMethod : 'COD';
+      if (
+        paymentMethod !== undefined &&
+        paymentMethod !== null &&
+        String(paymentMethod).trim() !== '' &&
+        paymentMethod !== 'COD'
+      ) {
+        return res.status(400).json({
+          error:
+            'Only Cash on Delivery (COD) is available for checkout. Online payment gateways (bKash / Nagad) are disabled.'
+        });
+      }
+
+      const selectedPayment: PaymentMethod = 'COD';
 
       const { order, duplicatePrevented } = await store.createOrderAtomic({
         idempotencyKey: cleanIdempotencyKey,
@@ -352,7 +363,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
     } catch (err) {
       console.error('[Jersey Valley Orders API Error]', err);
       if (err instanceof StoreError) {
-        return res.status(err.statusCode).json({ error: err.message });
+        return res.status(err.statusCode).json({ error: err.message, statusCode: err.statusCode });
       }
       const errMsg = err instanceof Error ? err.message : String(err);
       const isFirestoreIssue =
@@ -363,11 +374,14 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         errMsg.includes('UNAVAILABLE') ||
         errMsg.includes('UNAUTHENTICATED') ||
         errMsg.includes('credentials') ||
-        errMsg.includes('DEADLINE_EXCEEDED');
+        errMsg.includes('DEADLINE_EXCEEDED') ||
+        errMsg.includes('FAILED_PRECONDITION') ||
+        errMsg.includes('invalid_grant') ||
+        errMsg.includes('DECODER routines');
 
       if (isFirestoreIssue) {
         return res.status(503).json({
-          error: `Production database error: Cloud Firestore communication failure (${errMsg}). Verify that project "jerseyvalley-bd" has Cloud Firestore enabled for database "(default)".`,
+          error: `Production database error: Cloud Firestore communication failure (${errMsg}). Verify that project "jerseyvalley-bd" has Cloud Firestore enabled for database "(default)" and valid Firebase Admin credentials configured in Vercel.`,
           statusCode: 503
         });
       }
@@ -800,9 +814,34 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         });
       } catch (err) {
         if (err instanceof StoreError) {
-          return res.status(err.statusCode).json({ error: err.message });
+          return res.status(err.statusCode).json({
+            error: err.message,
+            statusCode: err.statusCode
+          });
         }
-        return res.status(500).json({ error: 'Unable to load admin overview.' });
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const isFirestoreIssue =
+          errMsg.includes('NOT_FOUND') ||
+          errMsg.includes('Database') ||
+          errMsg.includes('permission') ||
+          errMsg.includes('PERMISSION_DENIED') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('UNAUTHENTICATED') ||
+          errMsg.includes('credentials') ||
+          errMsg.includes('DEADLINE_EXCEEDED') ||
+          errMsg.includes('FAILED_PRECONDITION') ||
+          errMsg.includes('invalid_grant') ||
+          errMsg.includes('DECODER routines');
+        if (isFirestoreIssue) {
+          return res.status(503).json({
+            error: `Cloud Firestore connection error (${errMsg}). Verify FIREBASE_SERVICE_ACCOUNT_JSON and database "(default)" in project "jerseyvalley-bd".`,
+            statusCode: 503
+          });
+        }
+        return res.status(500).json({
+          error: `Unable to load admin overview: ${errMsg}`,
+          statusCode: 500
+        });
       }
     }
   );

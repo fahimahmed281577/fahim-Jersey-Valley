@@ -321,7 +321,10 @@ export function getStandaloneAdminConfigStatus(
   env: NodeJS.ProcessEnv = process.env
 ): StandaloneAdminConfigStatus {
   const loginId = (env.ADMIN_LOGIN_ID || '').trim().replace(/^["']|["']$/g, '');
-  const passwordHash = (env.ADMIN_PASSWORD_HASH || '').trim().replace(/^["']|["']$/g, '');
+  const passwordHash = (env.ADMIN_PASSWORD_HASH || '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\\\$/g, '$');
   const sessionSecret = (env.ADMIN_SESSION_SECRET || '').trim().replace(/^["']|["']$/g, '');
 
   const missingVars: string[] = [];
@@ -402,7 +405,10 @@ export async function verifyStandaloneAdminCredentials(
   }
 
   const configuredId = (env.ADMIN_LOGIN_ID || '').trim().replace(/^["']|["']$/g, '');
-  const configuredHash = (env.ADMIN_PASSWORD_HASH || '').trim().replace(/^["']|["']$/g, '');
+  const configuredHash = (env.ADMIN_PASSWORD_HASH || '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\\\$/g, '$');
 
   const idMatches = timingSafeStringMatch(trimmedId, configuredId);
   const hashToCompare = idMatches ? configuredHash : TIMING_GUARD_BCRYPT_HASH;
@@ -599,7 +605,7 @@ export function revokeStandaloneAdminSession(
   const parts = String(rawToken).trim().split('.');
   if (parts.length !== 2) return;
   const [encodedPayload, providedSig] = parts;
-  const secret = (env.ADMIN_SESSION_SECRET || '').trim();
+  const secret = (env.ADMIN_SESSION_SECRET || '').trim().replace(/^["']|["']$/g, '');
   if (!encodedPayload || !providedSig || !secret) return;
 
   const expectedSig = signStandalonePayload(encodedPayload, secret);

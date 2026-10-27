@@ -252,6 +252,7 @@ export const AdminDashboardPage: React.FC = () => {
       };
 
       // 1. Check standalone session & server configuration status
+      let sessionAuthenticated = false;
       try {
         const sessionRes = await fetch('/api/admin/auth/session', {
           credentials: 'include',
@@ -264,6 +265,9 @@ export const AdminDashboardPage: React.FC = () => {
             Array.isArray(sessionData.missingEnvVars) ? sessionData.missingEnvVars : []
           );
           setConfigNotice(sessionData.configNotice || null);
+          if (sessionData.authenticated) {
+            sessionAuthenticated = true;
+          }
           if (sessionData.csrfToken) {
             setCsrfToken(sessionData.csrfToken);
             baseHeaders['X-CSRF-Token'] = sessionData.csrfToken;
@@ -297,17 +301,22 @@ export const AdminDashboardPage: React.FC = () => {
       }
 
       if (!res.ok) {
-        setAuthorizedAdmin(false);
-        setAuthErrorMessage(
+        const errMessage =
           data?.error ||
-            (res.status === 401
-              ? 'Administrator authentication required. Sign in below with your Standalone Admin ID and password.'
-              : res.status === 404
+          (res.status === 401
+            ? 'Administrator authentication required. Sign in below with your Standalone Admin ID and password.'
+            : res.status === 404
               ? 'Admin overview endpoint not found (HTTP 404). Check server deployment.'
               : res.status === 503
-              ? (data?.error || 'Database persistence not configured (HTTP 503).')
-              : `Administrator access error (HTTP ${res.status}).`)
-        );
+                ? data?.error || 'Database persistence not configured (HTTP 503).'
+                : `Administrator access error (HTTP ${res.status}).`);
+        setAuthErrorMessage(errMessage);
+        if (sessionAuthenticated && res.status >= 500) {
+          setAuthorizedAdmin(true);
+          setPersistenceBackend('unconfigured-firestore');
+        } else {
+          setAuthorizedAdmin(false);
+        }
         return;
       }
 
@@ -843,14 +852,14 @@ export const AdminDashboardPage: React.FC = () => {
           <div className="flex items-start justify-between gap-4 border-b border-zinc-200 pb-4">
             <div>
               <span className="inline-block text-[11px] font-mono-num uppercase text-[#15803D] bg-emerald-50 border border-emerald-200 px-2.5 py-0.5">
-                TEMPORARY STANDALONE ADMIN AUTHENTICATION · LOCAL &amp; PREVIEW
+                STANDALONE ADMIN AUTHENTICATION · SERVER-VERIFIED SESSION
               </span>
               <h1 className="font-display text-3xl font-bold uppercase text-zinc-900 mt-2">
                 Jersey Valley Admin Sign In
               </h1>
               <p className="text-xs text-zinc-600 mt-1">
-                Sign in with your standalone administrator credentials to access and configure the
-                6-tab Admin Panel before connecting Firebase Authentication.
+                Sign in with your standalone administrator credentials to access and manage the
+                6-tab Jersey Valley Admin Console.
               </p>
             </div>
             <KeyRound className="w-7 h-7 text-[#111111] shrink-0" />
@@ -1067,7 +1076,7 @@ export const AdminDashboardPage: React.FC = () => {
           <span>
             <strong>
               {adminSessionMode === 'standalone'
-                ? 'Temporary Standalone Administrator Session:'
+                ? 'Standalone Administrator Session:'
                 : 'Verified Firebase Administrator Session:'}
             </strong>{' '}
             <code className="font-mono-num font-bold">{adminActorId}</code> · All changes are
@@ -1083,6 +1092,30 @@ export const AdminDashboardPage: React.FC = () => {
           <LogOut className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      {authErrorMessage && (
+        <div
+          role="alert"
+          className="p-4 bg-amber-50 border border-amber-300 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <strong className="block text-amber-900">
+                Database Persistence Notice (HTTP {authStatusCode || 503})
+              </strong>
+              <span>{authErrorMessage}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={loadAdminOverview}
+            className="px-3 py-1.5 bg-[#111111] text-white font-semibold hover:bg-[#15803D] transition-colors shrink-0"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
 
       {/* Navigation Tabs */}
       <div
