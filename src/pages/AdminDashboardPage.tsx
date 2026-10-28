@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import {
   ShieldCheck,
   Package,
@@ -40,7 +40,8 @@ import {
   type KitType,
   type EditionTier,
   type GenderFit,
-  type KitVisualSpec
+  type KitVisualSpec,
+  type ProductCategory
 } from '../lib/commerce';
 import type {
   StoredOrder,
@@ -92,6 +93,7 @@ type AdminTab =
   | 'overview'
   | 'products'
   | 'orders'
+  | 'categories'
   | 'customers'
   | 'inventory'
   | 'settings';
@@ -150,6 +152,9 @@ export const AdminDashboardPage: React.FC = () => {
     robots: 'noindex, nofollow'
   });
 
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [authorizedAdmin, setAuthorizedAdmin] = useState<boolean>(false);
   const [authStatusCode, setAuthStatusCode] = useState<number | null>(null);
@@ -161,12 +166,34 @@ export const AdminDashboardPage: React.FC = () => {
   const [recentOrders, setRecentOrders] = useState<SanitizedOrder[]>([]);
   const [orders, setOrders] = useState<SanitizedOrder[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [coupons, setCoupons] = useState<CouponDefinition[]>([]);
   const [stockLogs, setStockLogs] = useState<StockAdjustmentLog[]>([]);
   const [customers, setCustomers] = useState<CustomerDirectoryRecord[]>([]);
   const [settingsForm, setSettingsForm] = useState<SiteSettingsConfig | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [copiedUid, setCopiedUid] = useState<boolean>(false);
+
+  // Synchronize active tab with URL path (/admin/products, /admin/orders, etc.)
+  useEffect(() => {
+    const path = location.pathname.replace(/\/+$/, '');
+    if (path === '/admin/products') setActiveTab('products');
+    else if (path === '/admin/orders') setActiveTab('orders');
+    else if (path === '/admin/categories') setActiveTab('categories');
+    else if (path === '/admin/customers') setActiveTab('customers');
+    else if (path === '/admin/inventory') setActiveTab('inventory');
+    else if (path === '/admin/settings') setActiveTab('settings');
+    else if (path === '/admin/dashboard' || path === '/admin') setActiveTab('overview');
+  }, [location.pathname]);
+
+  const handleSelectTab = (tabId: AdminTab) => {
+    setActiveTab(tabId);
+    if (tabId === 'overview') {
+      navigate('/admin/dashboard');
+    } else {
+      navigate(`/admin/${tabId}`);
+    }
+  };
 
   // Product Management search, filter, pagination & modal state
   const [productSearch, setProductSearch] = useState<string>('');
@@ -183,6 +210,34 @@ export const AdminDashboardPage: React.FC = () => {
   const [newImageUrlInput, setNewImageUrlInput] = useState<string>('');
   const [uploadingImage, setUploadingImage] = useState<boolean>(false);
   const [savingProduct, setSavingProduct] = useState<boolean>(false);
+
+  // Product Deletion with Confirmation state
+  const [deleteProductModalOpen, setDeleteProductModalOpen] = useState<boolean>(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [deletingProduct, setDeletingProduct] = useState<boolean>(false);
+
+  // Category Management state
+  const [categoryModalOpen, setCategoryModalOpen] = useState<boolean>(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [categoryDraft, setCategoryDraft] = useState<{
+    slug: string;
+    name: string;
+    description: string;
+    badge: string;
+    displayOrder: number;
+    isActive: boolean;
+  }>({
+    slug: '',
+    name: '',
+    description: '',
+    badge: '',
+    displayOrder: 10,
+    isActive: true
+  });
+  const [deleteCategoryModalOpen, setDeleteCategoryModalOpen] = useState<boolean>(false);
+  const [categoryToDelete, setCategoryToDelete] = useState<ProductCategory | null>(null);
+  const [savingCategory, setSavingCategory] = useState<boolean>(false);
+  const [deletingCategory, setDeletingCategory] = useState<boolean>(false);
 
   // Order Management search, filter & detail inspector state
   const [orderSearch, setOrderSearch] = useState<string>('');
@@ -334,6 +389,7 @@ export const AdminDashboardPage: React.FC = () => {
       setRecentOrders(data.recentOrders || []);
       setOrders(data.orders || []);
       setProducts(data.products || []);
+      setCategories(data.categories || []);
       setCoupons(data.coupons || []);
       setStockLogs(data.stockLogs || []);
       setCustomers(data.customers || []);
@@ -842,6 +898,127 @@ export const AdminDashboardPage: React.FC = () => {
     }
   };
 
+  // Category Management Handlers
+  const openCreateCategoryModal = () => {
+    setEditingCategoryId(null);
+    setCategoryDraft({
+      slug: '',
+      name: '',
+      description: '',
+      badge: '',
+      displayOrder: (categories.length + 1) * 10,
+      isActive: true
+    });
+    setCategoryModalOpen(true);
+  };
+
+  const openEditCategoryModal = (cat: ProductCategory) => {
+    setEditingCategoryId(cat.id);
+    setCategoryDraft({
+      slug: cat.slug,
+      name: cat.name,
+      description: cat.description,
+      badge: cat.badge || '',
+      displayOrder: cat.displayOrder ?? cat.order ?? 10,
+      isActive: cat.isActive
+    });
+    setCategoryModalOpen(true);
+  };
+
+  const handleSaveCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingCategory(true);
+    try {
+      const headers = await buildAdminHeaders({
+        'Content-Type': 'application/json'
+      });
+      const url = editingCategoryId
+        ? `/api/admin/categories/${encodeURIComponent(editingCategoryId)}`
+        : '/api/admin/categories';
+      const method = editingCategoryId ? 'PUT' : 'POST';
+
+      const res = await fetch(url, {
+        method,
+        credentials: 'include',
+        headers,
+        body: JSON.stringify(categoryDraft)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        pushToast(data.error || 'Failed to save category', 'error');
+        return;
+      }
+      setCategoryModalOpen(false);
+      await loadAdminOverview();
+      await refreshCatalog();
+      pushToast(
+        editingCategoryId
+          ? `Updated category "${categoryDraft.name}"`
+          : `Created category "${categoryDraft.name}"`,
+        'success'
+      );
+    } catch {
+      pushToast('Network error while saving category.', 'error');
+    } finally {
+      setSavingCategory(false);
+    }
+  };
+
+  const handleDeleteCategory = async () => {
+    if (!categoryToDelete) return;
+    setDeletingCategory(true);
+    try {
+      const headers = await buildAdminHeaders();
+      const res = await fetch(`/api/admin/categories/${encodeURIComponent(categoryToDelete.id)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        pushToast(data.error || 'Failed to delete category', 'error');
+        return;
+      }
+      setDeleteCategoryModalOpen(false);
+      setCategoryToDelete(null);
+      await loadAdminOverview();
+      await refreshCatalog();
+      pushToast(`Category "${categoryToDelete.name}" deleted`, 'info');
+    } catch {
+      pushToast('Network error while deleting category', 'error');
+    } finally {
+      setDeletingCategory(false);
+    }
+  };
+
+  // Product Delete Handler
+  const handleDeleteProduct = async () => {
+    if (!productToDelete) return;
+    setDeletingProduct(true);
+    try {
+      const headers = await buildAdminHeaders();
+      const res = await fetch(`/api/admin/products/${encodeURIComponent(productToDelete.id)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        pushToast(data.error || 'Failed to delete product', 'error');
+        return;
+      }
+      setDeleteProductModalOpen(false);
+      setProductToDelete(null);
+      await loadAdminOverview();
+      await refreshCatalog();
+      pushToast(`Product "${productToDelete.name}" permanently deleted`, 'info');
+    } catch {
+      pushToast('Network error while deleting product', 'error');
+    } finally {
+      setDeletingProduct(false);
+    }
+  };
+
   // ============================================================================
   // STANDALONE ADMIN LOGIN PAGE (SHOWN WHEN UNAUTHENTICATED OR NON-ADMIN)
   // ============================================================================
@@ -1132,6 +1309,11 @@ export const AdminDashboardPage: React.FC = () => {
           },
           { id: 'orders', label: `Orders (${orders.length})`, icon: Package },
           {
+            id: 'categories',
+            label: `Categories (${categories.length})`,
+            icon: Tag
+          },
+          {
             id: 'customers',
             label: `Customers (${customers.length})`,
             icon: Users
@@ -1151,7 +1333,7 @@ export const AdminDashboardPage: React.FC = () => {
               type="button"
               role="tab"
               aria-selected={selected}
-              onClick={() => setActiveTab(tab.id as AdminTab)}
+              onClick={() => handleSelectTab(tab.id as AdminTab)}
               className={`px-4 py-2 text-xs font-semibold flex items-center gap-2 transition-colors ${
                 selected ? 'bg-[#111111] text-white' : 'text-zinc-700 hover:text-zinc-900'
               }`}
@@ -1444,9 +1626,11 @@ export const AdminDashboardPage: React.FC = () => {
                 className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs"
               >
                 <option value="all">All Categories</option>
-                <option value="national">National Teams</option>
-                <option value="club">Club Kits</option>
-                <option value="retro">Heritage Retro</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.slug}>
+                    {c.name}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -1556,6 +1740,18 @@ export const AdminDashboardPage: React.FC = () => {
                           <span>Restore</span>
                         </>
                       )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProductToDelete(prod);
+                        setDeleteProductModalOpen(true);
+                      }}
+                      className="px-3 py-1.5 bg-white border border-red-300 text-xs font-semibold text-red-700 hover:bg-red-50 hover:border-red-500 flex items-center gap-1.5"
+                      title="Permanently delete product"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete</span>
                     </button>
                   </div>
                 </div>
@@ -1740,6 +1936,113 @@ export const AdminDashboardPage: React.FC = () => {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          TAB: CATEGORY MANAGEMENT (ADD, EDIT, DELETE, STOREFRONT SYNC)
+          ===================================================================== */}
+      {activeTab === 'categories' && (
+        <div className="bg-white border border-zinc-200 p-6 space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-100 pb-4">
+            <div>
+              <h2 className="font-display text-xl font-bold uppercase text-zinc-900">
+                Product Category Management
+              </h2>
+              <p className="text-xs text-zinc-500">
+                Create, edit, and organize product categories. Categories automatically synchronize with
+                the public storefront navigation and filter menus.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openCreateCategoryModal}
+              className="px-4 py-2.5 bg-[#15803D] text-white text-xs font-semibold hover:bg-[#14532D] flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add New Category</span>
+            </button>
+          </div>
+
+          {categories.length === 0 ? (
+            <div className="p-8 text-center text-xs text-zinc-500 bg-[#F7F7F5] border border-zinc-200">
+              No categories found. Click &quot;Add New Category&quot; above to create one.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {categories.map((cat) => {
+                const matchingProducts = products.filter((p) => p.category === cat.slug);
+                return (
+                  <div
+                    key={cat.id}
+                    className="border border-zinc-200 p-5 bg-[#F7F7F5] flex flex-col justify-between space-y-4"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h3 className="font-display text-base font-bold uppercase text-zinc-900">
+                            {cat.name}
+                          </h3>
+                          <span className="text-[11px] font-mono-num text-zinc-500">
+                            slug: <strong>{cat.slug}</strong>
+                          </span>
+                        </div>
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 uppercase ${
+                            cat.isActive
+                              ? 'bg-emerald-100 text-[#15803D]'
+                              : 'bg-zinc-200 text-zinc-600'
+                          }`}
+                        >
+                          {cat.isActive ? 'Active' : 'Hidden'}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-zinc-600 leading-relaxed min-h-[2.5rem]">
+                        {cat.description || 'No description provided.'}
+                      </p>
+
+                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono-num pt-1">
+                        {cat.badge && (
+                          <span className="bg-amber-100 text-amber-900 px-2 py-0.5 font-bold uppercase text-[10px]">
+                            {cat.badge}
+                          </span>
+                        )}
+                        <span className="bg-white border border-zinc-200 px-2 py-0.5 text-zinc-600">
+                          Display Order: <strong>{cat.displayOrder ?? cat.order ?? 10}</strong>
+                        </span>
+                        <span className="bg-white border border-zinc-200 px-2 py-0.5 text-[#15803D] font-bold">
+                          {matchingProducts.length} Jerseys
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-200">
+                      <button
+                        type="button"
+                        onClick={() => openEditCategoryModal(cat)}
+                        className="px-3 py-1.5 bg-white border border-zinc-300 text-xs font-semibold text-zinc-800 hover:border-zinc-900 flex items-center gap-1.5"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCategoryToDelete(cat);
+                          setDeleteCategoryModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 bg-white border border-red-300 text-xs font-semibold text-red-700 hover:bg-red-50 hover:border-red-500 flex items-center gap-1.5"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -2475,9 +2778,11 @@ export const AdminDashboardPage: React.FC = () => {
                     }
                     className="w-full px-2.5 py-2 bg-[#F7F7F5] border border-zinc-300"
                   >
-                    <option value="national">National Team</option>
-                    <option value="club">Club</option>
-                    <option value="retro">Retro</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.slug}>
+                        {c.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -3053,6 +3358,289 @@ export const AdminDashboardPage: React.FC = () => {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: DELETE PRODUCT CONFIRMATION
+          ===================================================================== */}
+      {deleteProductModalOpen && productToDelete && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm Product Deletion"
+        >
+          <div className="bg-white border border-red-200 max-w-md w-full p-6 space-y-4 shadow-xl">
+            <div className="flex items-center gap-3 text-red-700">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-700" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-bold uppercase text-zinc-900">
+                  Delete Jersey Product
+                </h3>
+                <span className="text-xs text-zinc-500">Permanent Database Action</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-700 leading-relaxed">
+              Are you sure you want to permanently delete{' '}
+              <strong className="text-zinc-900">{productToDelete.name}</strong> ({productToDelete.team})?
+              All associated size inventory, SKU variants, and pricing records will be permanently removed.
+            </p>
+
+            <div className="p-3 bg-red-50 border border-red-200 text-[11px] text-red-900 font-mono-num">
+              <strong>ID:</strong> {productToDelete.id} · <strong>Price:</strong> {formatBdt(productToDelete.priceBdt)}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-200">
+              <button
+                type="button"
+                disabled={deletingProduct}
+                onClick={() => {
+                  setDeleteProductModalOpen(false);
+                  setProductToDelete(null);
+                }}
+                className="px-4 py-2 border border-zinc-300 bg-white text-xs font-semibold text-zinc-800 hover:bg-zinc-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deletingProduct}
+                onClick={handleDeleteProduct}
+                className="px-4 py-2 bg-red-700 text-white text-xs font-semibold hover:bg-red-800 flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{deletingProduct ? 'Deleting...' : 'Permanently Delete'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: ADD / EDIT CATEGORY
+          ===================================================================== */}
+      {categoryModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingCategoryId ? 'Edit Category' : 'Add New Category'}
+        >
+          <div className="bg-white border border-zinc-300 max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto shadow-xl">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-3">
+              <h3 className="font-display text-xl font-bold uppercase text-zinc-900">
+                {editingCategoryId ? 'Edit Category' : 'Add New Category'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setCategoryModalOpen(false)}
+                aria-label="Close modal"
+                className="p-1 text-zinc-500 hover:text-zinc-900"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveCategory} className="space-y-4 text-xs">
+              <div>
+                <label htmlFor="cat-name" className="block font-semibold text-zinc-800 mb-1">
+                  Category Name *
+                </label>
+                <input
+                  id="cat-name"
+                  type="text"
+                  required
+                  value={categoryDraft.name}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    const autoSlug = !editingCategoryId
+                      ? name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+                      : categoryDraft.slug;
+                    setCategoryDraft({
+                      ...categoryDraft,
+                      name,
+                      slug: autoSlug
+                    });
+                  }}
+                  placeholder="e.g. Special Edition Kits"
+                  className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="cat-slug" className="block font-semibold text-zinc-800 mb-1">
+                  URL Slug (Unique identifier) *
+                </label>
+                <input
+                  id="cat-slug"
+                  type="text"
+                  required
+                  value={categoryDraft.slug}
+                  onChange={(e) =>
+                    setCategoryDraft({
+                      ...categoryDraft,
+                      slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')
+                    })
+                  }
+                  placeholder="e.g. special-edition"
+                  className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num"
+                />
+                <span className="text-[11px] text-zinc-400 mt-0.5 block">
+                  Used in storefront URL filters (e.g. /shop?category={categoryDraft.slug || 'slug'})
+                </span>
+              </div>
+
+              <div>
+                <label htmlFor="cat-desc" className="block font-semibold text-zinc-800 mb-1">
+                  Description
+                </label>
+                <textarea
+                  id="cat-desc"
+                  rows={3}
+                  value={categoryDraft.description}
+                  onChange={(e) =>
+                    setCategoryDraft({ ...categoryDraft, description: e.target.value })
+                  }
+                  placeholder="Brief description for customer category banners..."
+                  className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="cat-badge" className="block font-semibold text-zinc-800 mb-1">
+                    Badge Label (Optional)
+                  </label>
+                  <input
+                    id="cat-badge"
+                    type="text"
+                    value={categoryDraft.badge}
+                    onChange={(e) =>
+                      setCategoryDraft({ ...categoryDraft, badge: e.target.value.toUpperCase() })
+                    }
+                    placeholder="e.g. NEW or 2026"
+                    className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs uppercase"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="cat-order" className="block font-semibold text-zinc-800 mb-1">
+                    Display Order
+                  </label>
+                  <input
+                    id="cat-order"
+                    type="number"
+                    min={1}
+                    max={999}
+                    value={categoryDraft.displayOrder}
+                    onChange={(e) =>
+                      setCategoryDraft({
+                        ...categoryDraft,
+                        displayOrder: Number(e.target.value)
+                      })
+                    }
+                    className="w-full px-3 py-2 bg-[#F7F7F5] border border-zinc-300 text-xs font-mono-num"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  id="cat-active"
+                  type="checkbox"
+                  checked={categoryDraft.isActive}
+                  onChange={(e) =>
+                    setCategoryDraft({ ...categoryDraft, isActive: e.target.checked })
+                  }
+                  className="rounded border-zinc-300 text-[#15803D] focus:ring-[#15803D]"
+                />
+                <label htmlFor="cat-active" className="text-xs text-zinc-800 font-semibold cursor-pointer">
+                  Active (Visible on public storefront category menu and filters)
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-zinc-200">
+                <button
+                  type="button"
+                  onClick={() => setCategoryModalOpen(false)}
+                  className="px-4 py-2 border border-zinc-300 bg-white font-semibold text-zinc-800 hover:bg-zinc-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingCategory}
+                  className="px-4 py-2 bg-[#15803D] text-white font-semibold hover:bg-[#14532D] disabled:opacity-50"
+                >
+                  {savingCategory ? 'Saving...' : editingCategoryId ? 'Update Category' : 'Create Category'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL: DELETE CATEGORY CONFIRMATION
+          ===================================================================== */}
+      {deleteCategoryModalOpen && categoryToDelete && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm Category Deletion"
+        >
+          <div className="bg-white border border-red-200 max-w-md w-full p-6 space-y-4 shadow-xl">
+            <div className="flex items-center gap-3 text-red-700">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-700" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-bold uppercase text-zinc-900">
+                  Delete Category
+                </h3>
+                <span className="text-xs text-zinc-500">Storefront Navigation Update</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-700 leading-relaxed">
+              Are you sure you want to delete category{' '}
+              <strong className="text-zinc-900">{categoryToDelete.name}</strong> (
+              <code className="font-mono-num">{categoryToDelete.slug}</code>)?
+            </p>
+
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 p-2.5">
+              Jerseys assigned to this category will remain in your catalog, but this category tab will
+              no longer appear in the customer storefront.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-200">
+              <button
+                type="button"
+                disabled={deletingCategory}
+                onClick={() => {
+                  setDeleteCategoryModalOpen(false);
+                  setCategoryToDelete(null);
+                }}
+                className="px-4 py-2 border border-zinc-300 bg-white text-xs font-semibold text-zinc-800 hover:bg-zinc-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deletingCategory}
+                onClick={handleDeleteCategory}
+                className="px-4 py-2 bg-red-700 text-white text-xs font-semibold hover:bg-red-800 flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{deletingCategory ? 'Deleting...' : 'Delete Category'}</span>
+              </button>
             </div>
           </div>
         </div>

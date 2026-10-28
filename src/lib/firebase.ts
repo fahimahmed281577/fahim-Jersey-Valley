@@ -76,15 +76,26 @@ export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
+export const isFirebaseLiveConfigured = Boolean(
+  (clientEnv.VITE_FIREBASE_API_KEY || '').trim() &&
+    (clientEnv.VITE_FIREBASE_API_KEY || '').trim() !== DEFAULT_FIREBASE_CONFIG.apiKey
+);
+
 let analyticsInstance: Analytics | null = null;
 let analyticsInitPromise: Promise<Analytics | null> | null = null;
 
 /**
- * Safely initializes Firebase Analytics only in supported browser environments.
- * Returns null in Node.js, SSR, automated test runners, or browsers with blocked cookies/storage.
+ * Safely initializes Firebase Analytics only in supported browser environments
+ * when a live Firebase Web API key and explicit analytics opt-in are configured.
+ * Returns null in Node.js, SSR, automated test runners, or when using the fallback config.
  */
 export function initFirebaseAnalytics(): Promise<Analytics | null> {
-  if (typeof window === 'undefined' || !resolvedFirebaseConfig.measurementId) {
+  if (
+    typeof window === 'undefined' ||
+    !resolvedFirebaseConfig.measurementId ||
+    !isFirebaseLiveConfigured ||
+    clientEnv.VITE_ENABLE_FIREBASE_ANALYTICS !== 'true'
+  ) {
     return Promise.resolve(null);
   }
   if (analyticsInstance) {
@@ -96,8 +107,12 @@ export function initFirebaseAnalytics(): Promise<Analytics | null> {
         if (!supported) {
           return null;
         }
-        analyticsInstance = getAnalytics(app);
-        return analyticsInstance;
+        try {
+          analyticsInstance = getAnalytics(app);
+          return analyticsInstance;
+        } catch {
+          return null;
+        }
       })
       .catch(() => null);
   }
@@ -105,7 +120,9 @@ export function initFirebaseAnalytics(): Promise<Analytics | null> {
 }
 
 export const analyticsPromise: Promise<Analytics | null> =
-  typeof window !== 'undefined'
+  typeof window !== 'undefined' &&
+  isFirebaseLiveConfigured &&
+  clientEnv.VITE_ENABLE_FIREBASE_ANALYTICS === 'true'
     ? new Promise((resolve) => {
         const schedule =
           'requestIdleCallback' in window
@@ -118,6 +135,9 @@ export const analyticsPromise: Promise<Analytics | null> =
     : Promise.resolve(null);
 
 async function testConnection(): Promise<void> {
+  if (!isFirebaseLiveConfigured) {
+    return;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -127,7 +147,7 @@ async function testConnection(): Promise<void> {
   }
 }
 
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && isFirebaseLiveConfigured) {
   setTimeout(() => {
     void testConnection();
   }, 1500);

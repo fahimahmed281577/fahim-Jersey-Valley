@@ -7,7 +7,7 @@ import { filterAndSortProducts, formatBdt } from '../lib/commerce';
 import { usePageSeo } from '../lib/seo';
 
 export const CatalogPage: React.FC = () => {
-  const { products } = useStore();
+  const { products, categories } = useStore();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const query = searchParams.get('q') || '';
@@ -21,16 +21,12 @@ export const CatalogPage: React.FC = () => {
     (searchParams.get('sort') as 'featured' | 'newest' | 'price-asc' | 'price-desc') ||
     'featured';
 
-  const seoTitle =
-    category === 'national'
-      ? 'National Team Football Jerseys Bangladesh — Jersey Valley'
-      : category === 'club'
-        ? 'European Club Football Jerseys Bangladesh — Jersey Valley'
-        : category === 'retro'
-          ? 'Heritage Retro Football Jerseys (1999–2007) — Jersey Valley'
-          : query
-            ? `Search "${query}" — Football Jerseys Catalog | Jersey Valley`
-            : 'Shop All Replica Football Jerseys in Bangladesh — Jersey Valley';
+  const matchedCategory = categories.find((c) => c.slug === category);
+  const seoTitle = matchedCategory
+    ? `${matchedCategory.name} Football Jerseys Bangladesh — Jersey Valley`
+    : query
+      ? `Search "${query}" — Football Jerseys Catalog | Jersey Valley`
+      : 'Shop All Replica Football Jerseys in Bangladesh — Jersey Valley';
 
   usePageSeo({
     title: seoTitle,
@@ -89,13 +85,7 @@ export const CatalogPage: React.FC = () => {
             <span>PRICES IN BDT (৳)</span>
           </div>
           <h1 className="font-display text-3xl sm:text-4xl font-bold uppercase tracking-tight text-zinc-900">
-            {category === 'national'
-              ? 'National Team Jerseys'
-              : category === 'club'
-                ? 'European Club Jerseys'
-                : category === 'retro'
-                  ? 'Heritage Retro Vault'
-                  : 'All Football Jerseys'}
+            {matchedCategory ? matchedCategory.name : 'All Football Jerseys'}
           </h1>
         </div>
 
@@ -165,23 +155,30 @@ export const CatalogPage: React.FC = () => {
                 Collection
               </span>
               <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  { value: 'all', label: 'All Kits' },
-                  { value: 'national', label: 'National' },
-                  { value: 'club', label: 'Club Kits' },
-                  { value: 'retro', label: 'Retro Vault' }
-                ].map((opt) => (
+                <button
+                  type="button"
+                  onClick={() => updateParam('category', 'all')}
+                  className={`py-1.5 px-2.5 text-xs font-medium border text-left transition-colors whitespace-nowrap ${
+                    category === 'all'
+                      ? 'bg-[#111111] text-white border-[#111111]'
+                      : 'bg-white text-zinc-700 border-zinc-200 hover:border-zinc-400'
+                  }`}
+                >
+                  All Kits
+                </button>
+                {categories.filter((c) => c.isActive).map((opt) => (
                   <button
-                    key={opt.value}
+                    key={opt.id}
                     type="button"
-                    onClick={() => updateParam('category', opt.value)}
-                    className={`py-1.5 px-2.5 text-xs font-medium border text-left transition-colors whitespace-nowrap ${
-                      category === opt.value
+                    onClick={() => updateParam('category', opt.slug)}
+                    className={`py-1.5 px-2.5 text-xs font-medium border text-left transition-colors whitespace-nowrap truncate ${
+                      category === opt.slug
                         ? 'bg-[#111111] text-white border-[#111111]'
                         : 'bg-white text-zinc-700 border-zinc-200 hover:border-zinc-400'
                     }`}
+                    title={opt.name}
                   >
-                    {opt.label}
+                    {opt.name}
                   </button>
                 ))}
               </div>

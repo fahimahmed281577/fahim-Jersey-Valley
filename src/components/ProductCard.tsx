@@ -126,6 +126,11 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product }) => {
                     <ResponsiveImage
                       productId={product.id}
                       alt={product.name}
+                      src={currentUploadedImageUrl}
+                      imageUrls={product.imageUrls}
+                      primaryImage={product.primaryImage}
+                      visual={product.visual}
+                      team={product.team}
                       sizes="(max-width: 640px) 92vw, (max-width: 1024px) 45vw, 380px"
                       fallbackColor={product.visual?.secondaryColor || '#F7F7F5'}
                     />

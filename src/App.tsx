@@ -68,6 +68,14 @@ const AnimatedRoutes: React.FC = () => {
           <Route path="/wishlist" element={<WishlistPage />} />
           <Route path="/account" element={<Navigate to="/track" replace />} />
           <Route path="/admin" element={<AdminDashboardPage />} />
+          <Route path="/admin/login" element={<AdminDashboardPage />} />
+          <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
+          <Route path="/admin/products" element={<AdminDashboardPage />} />
+          <Route path="/admin/orders" element={<AdminDashboardPage />} />
+          <Route path="/admin/categories" element={<AdminDashboardPage />} />
+          <Route path="/admin/customers" element={<AdminDashboardPage />} />
+          <Route path="/admin/inventory" element={<AdminDashboardPage />} />
+          <Route path="/admin/settings" element={<AdminDashboardPage />} />
         </Routes>
       </Suspense>
     </motion.div>

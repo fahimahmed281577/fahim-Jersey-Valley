@@ -1,4 +1,39 @@
-import type { Product, CouponDefinition, SiteSettingsConfig } from '../lib/commerce';
+import type { Product, CouponDefinition, SiteSettingsConfig, ProductCategory } from '../lib/commerce';
+
+export const INITIAL_CATEGORIES: ProductCategory[] = [
+  {
+    id: 'national',
+    name: 'National Teams',
+    slug: 'national',
+    description: 'FIFA World Cup and continental tournament national replica jerseys',
+    isActive: true,
+    order: 1
+  },
+  {
+    id: 'club',
+    name: 'Club Kits',
+    slug: 'club',
+    description: 'Premier League, La Liga, and European Champions League club kits',
+    isActive: true,
+    order: 2
+  },
+  {
+    id: 'retro',
+    name: 'Retro Vault',
+    slug: 'retro',
+    description: 'Classic heritage tournament shirts from 1999 to 2007',
+    isActive: true,
+    order: 3
+  },
+  {
+    id: 'special',
+    name: 'Special & Fourth Kits',
+    slug: 'special',
+    description: 'Limited-edition blackout, centenary, and anniversary jerseys',
+    isActive: true,
+    order: 4
+  }
+];
 
 export const INITIAL_SITE_SETTINGS: SiteSettingsConfig = {
   announcementText:

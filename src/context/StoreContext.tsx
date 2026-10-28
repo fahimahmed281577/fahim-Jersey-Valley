@@ -26,12 +26,14 @@ import {
   type Product,
   type CouponDefinition,
   type SiteSettingsConfig,
-  type JerseySize
+  type JerseySize,
+  type ProductCategory
 } from '../lib/commerce';
 import {
   INITIAL_CATALOG,
   INITIAL_COUPONS,
-  INITIAL_SITE_SETTINGS
+  INITIAL_SITE_SETTINGS,
+  INITIAL_CATEGORIES
 } from '../data/catalog';
 
 export interface CartLineItem {
@@ -69,6 +71,7 @@ interface ToastMessage {
 
 interface StoreContextValue {
   products: Product[];
+  categories: ProductCategory[];
   coupons: CouponDefinition[];
   settings: SiteSettingsConfig;
   isLoadingCatalog: boolean;
@@ -124,6 +127,7 @@ const DEFAULT_ADDRESS: CustomerAddressProfile = {
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [products, setProducts] = useState<Product[]>(INITIAL_CATALOG);
+  const [categories, setCategories] = useState<ProductCategory[]>(INITIAL_CATEGORIES);
   const [coupons, setCoupons] = useState<CouponDefinition[]>(INITIAL_COUPONS);
   const [settings, setSettings] = useState<SiteSettingsConfig>(INITIAL_SITE_SETTINGS);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(false);
@@ -192,6 +196,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const data = await res.json();
         if (Array.isArray(data.products) && data.products.length > 0) {
           setProducts(data.products);
+        }
+        if (Array.isArray(data.categories) && data.categories.length > 0) {
+          setCategories(data.categories);
         }
         if (Array.isArray(data.coupons)) {
           setCoupons(data.coupons);
@@ -294,6 +301,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           console.warn('Profile sync notice:', userDocPath, err);
         }
       }
+    }, () => {
+      setCurrentUser(null);
+      setIsAdmin(false);
+      setIsAuthReady(true);
     });
     return () => unsub();
   }, []);
@@ -522,6 +533,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     <StoreContext.Provider
       value={{
         products,
+        categories,
         coupons,
         settings,
         isLoadingCatalog,

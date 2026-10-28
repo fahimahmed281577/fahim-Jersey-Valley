@@ -1,5 +1,16 @@
-export type JerseyCategory = 'national' | 'club' | 'retro';
+export type JerseyCategory = 'national' | 'club' | 'retro' | string;
 export type KitType = 'Home' | 'Away' | 'Third' | 'Retro' | 'Special';
+
+export interface ProductCategory {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  isActive: boolean;
+  order: number;
+  badge?: string;
+  displayOrder?: number;
+}
 export type EditionTier = 'Fan Replica' | 'Player Fit Replica' | 'Heritage Retro Replica';
 export type GenderFit = 'Men' | 'Women' | 'Kids' | 'Unisex';
 export type JerseySize = 'S' | 'M' | 'L' | 'XL' | 'XXL';

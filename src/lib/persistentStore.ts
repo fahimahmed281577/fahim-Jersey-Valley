@@ -19,12 +19,14 @@ import {
   type KitType,
   type EditionTier,
   type GenderFit,
-  type CartItemInput
+  type CartItemInput,
+  type ProductCategory
 } from './commerce';
 import {
   INITIAL_CATALOG,
   INITIAL_COUPONS,
-  INITIAL_SITE_SETTINGS
+  INITIAL_SITE_SETTINGS,
+  INITIAL_CATEGORIES
 } from '../data/catalog';
 
 export interface StoredOrder {
@@ -209,6 +211,11 @@ export interface PersistenceAdapter {
   createProductAtomic(input: UpsertProductInput): Promise<Product>;
   updateProductAtomic(productId: string, input: Partial<UpsertProductInput>): Promise<Product>;
   setProductArchiveStateAtomic(productId: string, isActive: boolean): Promise<Product>;
+  deleteProductAtomic(productId: string): Promise<void>;
+  listCategories(): Promise<ProductCategory[]>;
+  createCategoryAtomic(input: Omit<ProductCategory, 'id'> & { id?: string }): Promise<ProductCategory>;
+  updateCategoryAtomic(id: string, input: Partial<ProductCategory>): Promise<ProductCategory>;
+  deleteCategoryAtomic(id: string): Promise<void>;
   listStockAdjustmentLogs(limit?: number): Promise<StockAdjustmentLog[]>;
   upsertCouponAtomic(coupon: CouponDefinition): Promise<CouponDefinition>;
   deleteCouponAtomic(code: string): Promise<void>;
@@ -829,6 +836,7 @@ function buildCustomerDirectoryFromOrders(
 export class TransactionalStoreAdapter implements PersistenceAdapter {
   public readonly backendType = 'transactional-store' as const;
   private catalog: Product[];
+  private categories: ProductCategory[];
   private coupons: CouponDefinition[];
   private settings: SiteSettingsConfig;
   private orders: Map<string, StoredOrder>;
@@ -840,6 +848,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
   constructor(options?: { snapshotFilePath?: string }) {
     this.snapshotFilePath = options?.snapshotFilePath;
     this.catalog = structuredClone(INITIAL_CATALOG);
+    this.categories = structuredClone(INITIAL_CATEGORIES);
     this.coupons = structuredClone(INITIAL_COUPONS);
     this.settings = withEnvGatewayFlags(structuredClone(INITIAL_SITE_SETTINGS));
     this.orders = new Map([[DEMO_SEED_ORDER.orderNumber, structuredClone(DEMO_SEED_ORDER)]]);
@@ -859,6 +868,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
       const raw = fs.readFileSync(this.snapshotFilePath, 'utf-8');
       const parsed = JSON.parse(raw) as {
         catalog?: Product[];
+        categories?: ProductCategory[];
         coupons?: CouponDefinition[];
         settings?: SiteSettingsConfig;
         orders?: StoredOrder[];
@@ -866,6 +876,9 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
       };
       if (Array.isArray(parsed.catalog) && parsed.catalog.length > 0) {
         this.catalog = parsed.catalog;
+      }
+      if (Array.isArray(parsed.categories) && parsed.categories.length > 0) {
+        this.categories = parsed.categories;
       }
       if (Array.isArray(parsed.coupons) && parsed.coupons.length > 0) {
         this.coupons = parsed.coupons;
@@ -894,6 +907,7 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
     try {
       const payload = {
         catalog: this.catalog,
+        categories: this.categories,
         coupons: this.coupons,
         settings: this.settings,
         orders: Array.from(this.orders.values()),
@@ -1375,6 +1389,83 @@ export class TransactionalStoreAdapter implements PersistenceAdapter {
     });
   }
 
+  async deleteProductAtomic(productId: string): Promise<void> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const index = this.catalog.findIndex((p) => p.id === productId);
+      if (index === -1) {
+        throw new StoreError(404, `Product "${productId}" not found.`);
+      }
+      this.catalog.splice(index, 1);
+      this.persistSnapshotToDisk();
+    });
+  }
+
+  async listCategories(): Promise<ProductCategory[]> {
+    this.loadSnapshotFromDisk();
+    return structuredClone(this.categories).sort((a, b) => a.order - b.order);
+  }
+
+  async createCategoryAtomic(input: Omit<ProductCategory, 'id'> & { id?: string }): Promise<ProductCategory> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const cleanName = String(input.name ?? '').trim();
+      if (cleanName.length < 2 || cleanName.length > 60) {
+        throw new StoreError(400, 'Category name must be between 2 and 60 characters.');
+      }
+      const slug = (input.slug || slugifyProductName(cleanName)).toLowerCase();
+      const catId = input.id || slug;
+      if (this.categories.some((c) => c.id === catId || c.slug === slug)) {
+        throw new StoreError(409, `Category with ID or slug "${catId}" already exists.`);
+      }
+      const newCat: ProductCategory = {
+        id: catId,
+        name: cleanName,
+        slug,
+        description: String(input.description ?? '').trim().slice(0, 200),
+        isActive: input.isActive ?? true,
+        order: Number(input.order) || this.categories.length + 1
+      };
+      this.categories.push(newCat);
+      this.persistSnapshotToDisk();
+      return structuredClone(newCat);
+    });
+  }
+
+  async updateCategoryAtomic(id: string, input: Partial<ProductCategory>): Promise<ProductCategory> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const index = this.categories.findIndex((c) => c.id === id);
+      if (index === -1) {
+        throw new StoreError(404, `Category "${id}" not found.`);
+      }
+      const existing = this.categories[index];
+      const updated: ProductCategory = {
+        ...existing,
+        name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name,
+        slug: typeof input.slug === 'string' && input.slug.trim() ? input.slug.trim().toLowerCase() : existing.slug,
+        description: typeof input.description === 'string' ? input.description.trim().slice(0, 200) : existing.description,
+        isActive: typeof input.isActive === 'boolean' ? input.isActive : existing.isActive,
+        order: typeof input.order === 'number' ? input.order : existing.order
+      };
+      this.categories[index] = updated;
+      this.persistSnapshotToDisk();
+      return structuredClone(updated);
+    });
+  }
+
+  async deleteCategoryAtomic(id: string): Promise<void> {
+    return this.runExclusive(async () => {
+      this.loadSnapshotFromDisk();
+      const index = this.categories.findIndex((c) => c.id === id);
+      if (index === -1) {
+        throw new StoreError(404, `Category "${id}" not found.`);
+      }
+      this.categories.splice(index, 1);
+      this.persistSnapshotToDisk();
+    });
+  }
+
   async listStockAdjustmentLogs(limit = 50): Promise<StockAdjustmentLog[]> {
     this.loadSnapshotFromDisk();
     return structuredClone(this.stockLogs.slice(0, limit));
@@ -1463,6 +1554,19 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
             await settingsRef.set(
               sanitizeForFirestore(withEnvGatewayFlags(structuredClone(INITIAL_SITE_SETTINGS)))
             );
+          }
+
+          const firstCatRef = this.db.collection('serverCategories').doc(INITIAL_CATEGORIES[0].id);
+          const firstCatSnap = await firstCatRef.get();
+          if (!firstCatSnap.exists) {
+            const catBatch = this.db.batch();
+            for (const cat of INITIAL_CATEGORIES) {
+              catBatch.set(
+                this.db.collection('serverCategories').doc(cat.id),
+                sanitizeForFirestore(structuredClone(cat))
+              );
+            }
+            await catBatch.commit();
           }
 
           const firstProductRef = this.db.collection('serverCatalog').doc(INITIAL_CATALOG[0].id);
@@ -2064,6 +2168,91 @@ export class FirestoreAdminPersistenceAdapter implements PersistenceAdapter {
     });
   }
 
+  async deleteProductAtomic(productId: string): Promise<void> {
+    await this.ensureSeeded();
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const prodRef = this.db.collection('serverCatalog').doc(productId);
+      const snap = await tx.get(prodRef);
+      if (!snap.exists) {
+        throw new StoreError(404, `Product "${productId}" not found.`);
+      }
+      tx.delete(prodRef);
+    });
+  }
+
+  async listCategories(): Promise<ProductCategory[]> {
+    await this.ensureSeeded();
+    const snap = await this.db.collection('serverCategories').get();
+    if (snap.empty) {
+      return structuredClone(INITIAL_CATEGORIES);
+    }
+    return snap.docs
+      .map((d) => d.data() as ProductCategory)
+      .sort((a, b) => a.order - b.order);
+  }
+
+  async createCategoryAtomic(input: Omit<ProductCategory, 'id'> & { id?: string }): Promise<ProductCategory> {
+    await this.ensureSeeded();
+    const cleanName = String(input.name ?? '').trim();
+    if (cleanName.length < 2 || cleanName.length > 60) {
+      throw new StoreError(400, 'Category name must be between 2 and 60 characters.');
+    }
+    const slug = (input.slug || slugifyProductName(cleanName)).toLowerCase();
+    const catId = input.id || slug;
+
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const ref = this.db.collection('serverCategories').doc(catId);
+      const snap = await tx.get(ref);
+      if (snap.exists) {
+        throw new StoreError(409, `Category "${catId}" already exists.`);
+      }
+      const newCat: ProductCategory = {
+        id: catId,
+        name: cleanName,
+        slug,
+        description: String(input.description ?? '').trim().slice(0, 200),
+        isActive: input.isActive ?? true,
+        order: Number(input.order) || 99
+      };
+      tx.set(ref, sanitizeForFirestore(newCat));
+      return newCat;
+    });
+  }
+
+  async updateCategoryAtomic(id: string, input: Partial<ProductCategory>): Promise<ProductCategory> {
+    await this.ensureSeeded();
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const ref = this.db.collection('serverCategories').doc(id);
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        throw new StoreError(404, `Category "${id}" not found.`);
+      }
+      const existing = snap.data() as ProductCategory;
+      const updated: ProductCategory = {
+        ...existing,
+        name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : existing.name,
+        slug: typeof input.slug === 'string' && input.slug.trim() ? input.slug.trim().toLowerCase() : existing.slug,
+        description: typeof input.description === 'string' ? input.description.trim().slice(0, 200) : existing.description,
+        isActive: typeof input.isActive === 'boolean' ? input.isActive : existing.isActive,
+        order: typeof input.order === 'number' ? input.order : existing.order
+      };
+      tx.set(ref, sanitizeForFirestore(updated));
+      return updated;
+    });
+  }
+
+  async deleteCategoryAtomic(id: string): Promise<void> {
+    await this.ensureSeeded();
+    return this.db.runTransaction(async (tx: Transaction) => {
+      const ref = this.db.collection('serverCategories').doc(id);
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        throw new StoreError(404, `Category "${id}" not found.`);
+      }
+      tx.delete(ref);
+    });
+  }
+
   async listStockAdjustmentLogs(limit = 50): Promise<StockAdjustmentLog[]> {
     await this.ensureSeeded();
     const snap = await this.db.collection('serverStockLogs').get();
@@ -2347,6 +2536,26 @@ export class UnconfiguredProductionPersistenceAdapter implements PersistenceAdap
   }
 
   async setProductArchiveStateAtomic(): Promise<Product> {
+    return this.failClosed();
+  }
+
+  async deleteProductAtomic(): Promise<void> {
+    return this.failClosed();
+  }
+
+  async listCategories(): Promise<ProductCategory[]> {
+    return this.failClosed();
+  }
+
+  async createCategoryAtomic(): Promise<ProductCategory> {
+    return this.failClosed();
+  }
+
+  async updateCategoryAtomic(): Promise<ProductCategory> {
+    return this.failClosed();
+  }
+
+  async deleteCategoryAtomic(): Promise<void> {
     return this.failClosed();
   }
 

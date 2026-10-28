@@ -398,6 +398,40 @@
         }
       },
       "required": ["userId", "email", "consentGiven", "createdAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Storefront product category item stored at /categories/{categoryId}",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60,
+          "pattern": "^[a-z0-9\\-]+$"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "name", "slug", "isActive", "order"]
     }
   },
   "firestore": {
@@ -416,6 +450,10 @@
     "/admins/{adminUid}": {
       "schema": { "$ref": "#/entities/AdminRecord" },
       "description": "Trusted administrator lookup collection"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Storefront product category collections managed by administrators and publicly read by visitors."
     },
     "/products/{productId}": {
       "schema": { "$ref": "#/entities/Product" },

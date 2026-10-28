@@ -201,6 +201,11 @@ export const ProductDetailPage: React.FC = () => {
               <ResponsiveImage
                 productId={product.id}
                 alt={product.name}
+                src={uploadedPhotos[selectedPhotoIdx] || product.primaryImage}
+                imageUrls={product.imageUrls}
+                primaryImage={product.primaryImage}
+                visual={product.visual}
+                team={product.team}
                 priority={true}
                 sizes="(max-width: 1024px) 100vw, 60vw"
                 className="w-full h-full"

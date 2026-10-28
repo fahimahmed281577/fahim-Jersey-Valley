@@ -194,20 +194,36 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
   // 1. Public Storefront Catalog & Config API (Backed by shared PersistenceAdapter)
   app.get('/api/catalog', async (_req, res) => {
     try {
-      const { products, coupons, settings } = await store.getCatalogAndSettings({
-        includeAllCoupons: false
-      });
+      const [catalogData, categories] = await Promise.all([
+        store.getCatalogAndSettings({ includeAllCoupons: false }),
+        store.listCategories().catch(() => [])
+      ]);
       res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
       return res.json({
-        products: products.filter((p) => p.isActive),
-        coupons,
-        settings
+        products: catalogData.products.filter((p) => p.isActive),
+        categories,
+        coupons: catalogData.coupons,
+        settings: catalogData.settings
       });
     } catch (err) {
       if (err instanceof StoreError) {
         return res.status(err.statusCode).json({ error: err.message });
       }
       return res.status(500).json({ error: 'Unable to load storefront catalog.' });
+    }
+  });
+
+  // 1b. Public Categories API
+  app.get('/api/categories', async (_req, res) => {
+    try {
+      const categories = await store.listCategories();
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+      return res.json({ categories });
+    } catch (err) {
+      if (err instanceof StoreError) {
+        return res.status(err.statusCode).json({ error: err.message });
+      }
+      return res.status(500).json({ error: 'Unable to load categories.' });
     }
   });
 
@@ -688,11 +704,13 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
         const { session: standaloneSession } = extractStandaloneAdminSession(req);
         const [
           { products, coupons, settings },
+          categories,
           allOrders,
           stockLogs,
           customers
         ] = await Promise.all([
           store.getCatalogAndSettings({ includeAllCoupons: true }),
+          store.listCategories().catch(() => []),
           store.listAllOrders(),
           store.listStockAdjustmentLogs(60),
           store.listCustomerDirectory()
@@ -807,6 +825,7 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
           recentOrders: sanitizedOrders.slice(0, 8),
           orders: sanitizedOrders,
           products,
+          categories,
           coupons,
           stockLogs,
           customers,
@@ -920,6 +939,81 @@ export async function createJerseyValleyApp(options?: JerseyValleyAppOptions) {
           return res.status(err.statusCode).json({ error: err.message });
         }
         return res.status(500).json({ error: 'Unable to archive/restore product.' });
+      }
+    }
+  );
+
+  // Admin Delete Product API (Permanent removal with confirmation)
+  app.delete(
+    '/api/admin/products/:productId',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      const productId = String(req.params.productId ?? '').trim();
+      try {
+        await store.deleteProductAtomic(productId);
+        return res.json({ deleted: true, productId });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to delete product.' });
+      }
+    }
+  );
+
+  // Admin Create Category API
+  app.post(
+    '/api/admin/categories',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      try {
+        const category = await store.createCategoryAtomic(req.body ?? {});
+        return res.status(201).json({ category });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to create category.' });
+      }
+    }
+  );
+
+  // Admin Update Category API
+  app.put(
+    '/api/admin/categories/:id',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      const id = String(req.params.id ?? '').trim();
+      try {
+        const category = await store.updateCategoryAtomic(id, req.body ?? {});
+        return res.json({ category });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to update category.' });
+      }
+    }
+  );
+
+  // Admin Delete Category API
+  app.delete(
+    '/api/admin/categories/:id',
+    rateLimitMiddleware('admin-write'),
+    requireAdmin,
+    async (req, res) => {
+      const id = String(req.params.id ?? '').trim();
+      try {
+        await store.deleteCategoryAtomic(id);
+        return res.json({ deleted: true, id });
+      } catch (err) {
+        if (err instanceof StoreError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        return res.status(500).json({ error: 'Unable to delete category.' });
       }
     }
   );

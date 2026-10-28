@@ -78,6 +78,17 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'name', 'slug', 'isActive', 'order']) &&
+        data.keys().hasOnly(['id', 'name', 'slug', 'description', 'isActive', 'order']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 60 &&
+        data.slug is string && data.slug.size() >= 2 && data.slug.size() <= 60 && data.slug.matches('^[a-z0-9\\-]+$') &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 200)) &&
+        data.isActive is bool &&
+        data.order is number;
+    }
+
     function isValidProduct(data) {
       return data.keys().hasAll([
           'id', 'slug', 'name', 'team', 'category', 'kitType', 'editionTier',
@@ -250,6 +261,16 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().diff(existing()).affectedKeys().hasOnly(['email']);
       allow delete: if isAdmin() && isValidId(adminUid);
+    }
+
+    // 4b. /categories/{categoryId} — Storefront Categories
+    match /categories/{categoryId} {
+      allow get, list: if true;
+      allow create: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming()) && incoming().id == categoryId;
+      allow update: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'slug', 'description', 'isActive', 'order']);
+      allow delete: if isAdmin() && isValidId(categoryId);
     }
 
     // 5. /products/{productId} — Storefront Catalog
